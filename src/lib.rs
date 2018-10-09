@@ -15,6 +15,7 @@ use blake::digest::Digest;
 use skein::digest::generic_array::typenum::U32;
 use skein::digest::generic_array::GenericArray;
 use std::arch::x86_64::__m128i as i64x2;
+use std::str::FromStr;
 use byteorder::{ByteOrder, LE};
 
 use self::mmap::Mmap;
@@ -42,111 +43,129 @@ pub struct HasherConfig {
     n: u32
 }
 
-pub trait Hasher<Noncer> {
-    fn set_blob(&mut self, blob: Vec<u8>, noncer: Noncer);
-    fn next_hash(&mut self) -> GenericArray<u8, U32>;
+#[derive(Debug)]
+pub struct UnknownAlgo{ name: Box<str> }
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Algo {
+    Cn1
+}
+impl FromStr for Algo {
+    type Err = UnknownAlgo;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "cn/1" => Algo::Cn1,
+            name => Err(UnknownAlgo{ name: name.to_owned().into_boxed_str() })?,
+        })
+    }
 }
 
-impl<Noncer> Iterator for Hasher<Noncer> {
+pub struct Hasher(Hasher_);
+enum Hasher_ {
+    CryptoNight{ memory: Mmap<[i64x2; 1 << 17]> },
+}
+impl Hasher {
+    pub fn new(algo: Algo, cfg: &HasherConfig) -> Self {
+        Hasher(match algo {
+            Algo::Cn1 => match cfg.n {
+                1 => Hasher_::CryptoNight { memory: Mmap::default() },
+                //2 => Box::new(CryptoNight2::new(blob, noncer)),
+                _ => unimplemented!("unsupported configuration"),
+            }
+            /*
+            "cn-lite/0" => match cfg.n {
+                1 => Box::new(CryptoNightLite::new(blob, noncer)),
+                2 => Box::new(CryptoNightLite2::new(blob, noncer)),
+                _ => unimplemented!("unsupported configuration"),
+            }
+            "cn-lite/1" => match cfg.n {
+                1 => Box::new(CryptoNightLiteV1::new(blob, noncer)),
+                _ => unimplemented!("unsupported configuration"),
+            }
+            "cn-heavy" => match cfg.n {
+                1 => Box::new(CryptoNightHeavy::new(blob, noncer)),
+                _ => unimplemented!("unsupported configuration"),
+            }
+            "cn/xtl" => match cfg.n {
+                1 => Box::new(CryptoNightXtl::new(blob, noncer)),
+                _ => unimplemented!("unsupported configuration"),
+            }*/
+        })
+    }
+    pub fn hashes<'a, Noncer: Iterator<Item = u32> + 'static>(&'a mut self, mut blob: Box<[u8]>, noncer: Noncer) -> Hashes<'a> {
+        match &mut self.0 {
+            Hasher_::CryptoNight { memory } => {
+                let algo = CryptoNight::new(&mut memory[..], noncer, &mut blob);
+                Hashes::new(&mut memory[..], blob, Box::new(algo))
+            }
+        }
+    }
+}
+
+pub struct Hashes<'a> {
+    memory: &'a mut [i64x2],
+    blob: Box<[u8]>,
+    algo: Box<dyn Impl>,
+}
+
+impl<'a> Hashes<'a> {
+    fn new(memory: &'a mut [i64x2], blob: Box<[u8]>, algo: Box<dyn Impl>) -> Self {
+        Hashes { memory, blob, algo }
+    }
+}
+
+impl<'a> Iterator for Hashes<'a> {
     type Item = [u8; 32];
     fn next(&mut self) -> Option<Self::Item> {
         let mut h = [0u8; 32];
-        h.copy_from_slice(&self.next_hash());
+        h.copy_from_slice(&self.algo.next_hash(self.memory, &mut self.blob));
         Some(h)
     }
 }
 
-pub fn hasher<Noncer: Iterator<Item = u32> + 'static>(
-    algo: &str,
-    cfg: &HasherConfig,
-    blob: Vec<u8>,
-    noncer: Noncer,
-) -> Box<Hasher<Noncer>> {
-    match algo {
-        "cn/1" => match cfg.n {
-            1 => Box::new(CryptoNight::new(blob, noncer)),
-            2 => Box::new(CryptoNight2::new(blob, noncer)),
-            _ => unimplemented!("unsupported configuration"),
-        }
-        "cn-lite/0" => match cfg.n {
-            1 => Box::new(CryptoNightLite::new(blob, noncer)),
-            2 => Box::new(CryptoNightLite2::new(blob, noncer)),
-            _ => unimplemented!("unsupported configuration"),
-        }
-        "cn-lite/1" => match cfg.n {
-            1 => Box::new(CryptoNightLiteV1::new(blob, noncer)),
-            _ => unimplemented!("unsupported configuration"),
-        }
-        "cn-heavy" => match cfg.n {
-            1 => Box::new(CryptoNightHeavy::new(blob, noncer)),
-            _ => unimplemented!("unsupported configuration"),
-        }
-        "cn/xtl" => match cfg.n {
-            1 => Box::new(CryptoNightXtl::new(blob, noncer)),
-            _ => unimplemented!("unsupported configuration"),
-        }
-        _ => unimplemented!("unsupported algo")
-    }
+trait Impl {
+    fn next_hash(&mut self, memory: &mut [i64x2], blob: &mut [u8]) -> GenericArray<u8, U32>;
 }
 
 #[derive(Default)]
 pub struct CryptoNight<Noncer> {
-    memory: Mmap<[i64x2; 1 << 17]>,
-    blob: Vec<u8>,
-    state0: State,
-    state1: State,
-    tweak: u64,
     noncer: Noncer,
+    state: (State, State),
+    tweak: u64,
 }
 
 impl<Noncer: Iterator<Item = u32>> CryptoNight<Noncer> {
-    fn transplode(&mut self) -> GenericArray<u8, U32> {
-        set_nonce(&mut self.blob, self.noncer.next().unwrap());
-        self.state1 = State::from(sha3::Keccak256Full::digest(&self.blob));
-        self.tweak = LE::read_u64(&self.blob[35..43]) ^ ((&self.state1).into(): &[u64; 25])[24];
-        cn_aesni::transplode(
-            (&mut self.state0).into(),
-            &mut self.memory[..],
-            (&self.state1).into(),
-        );
-        let result = finalize(self.state0);
-        self.state0 = self.state1;
-        result
-    }
-
-    fn mix(&mut self) {
-        cn_aesni::mix(&mut self.memory, (&self.state0).into(), self.tweak);
-    }
-}
-
-impl<Noncer: Iterator<Item = u32>> CryptoNight<Noncer> {
-    pub fn new(blob: Vec<u8>, noncer: Noncer) -> Self {
+    pub fn new(memory: &mut [i64x2], noncer: Noncer, blob: &mut [u8]) -> Self {
         let mut res = Self {
-            memory: Default::default(),
-            blob,
-            state0: Default::default(),
-            state1: Default::default(),
-            tweak: Default::default(),
+            state: Default::default(),
+            tweak: u64::default(),
             noncer,
         };
-        res.transplode();
+        res.transplode(memory, blob);
         res
     }
+    fn transplode(&mut self, memory: &mut [i64x2], blob: &mut [u8]) -> GenericArray<u8, U32> {
+        set_nonce(blob, self.noncer.next().unwrap());
+        self.state.1 = State::from(sha3::Keccak256Full::digest(blob));
+        self.tweak = LE::read_u64(&blob[35..43]) ^ ((&self.state.1).into(): &[u64; 25])[24];
+        cn_aesni::transplode(
+            (&mut self.state.0).into(),
+            &mut memory[..],
+            (&self.state.1).into(),
+        );
+        let result = finalize(self.state.0);
+        self.state.0 = self.state.1;
+        result
+    }
 }
 
-impl<Noncer: Iterator<Item = u32>> Hasher<Noncer> for CryptoNight<Noncer> {
-    fn set_blob(&mut self, blob: Vec<u8>, noncer: Noncer) {
-        self.blob = blob;
-        self.noncer = noncer;
-        self.transplode();
-    }
-
-    fn next_hash(&mut self) -> GenericArray<u8, U32> {
-        self.mix();
-        self.transplode()
+impl<Noncer: Iterator<Item = u32>> Impl for CryptoNight<Noncer> {
+    fn next_hash(&mut self, memory: &mut [i64x2], blob: &mut [u8]) -> GenericArray<u8, U32> {
+        cn_aesni::mix(memory, (&self.state.0).into(), self.tweak);
+        self.transplode(memory, blob)
     }
 }
 
+/*
 #[derive(Default)]
 pub struct CryptoNight2<Noncer> {
     memory: Mmap<[[i64x2; 1 << 17]; 2]>,
@@ -198,7 +217,7 @@ impl<Noncer: Iterator<Item = u32>> CryptoNight2<Noncer> {
     }
 }
 
-impl<Noncer: Iterator<Item = u32>> Hasher<Noncer> for CryptoNight2<Noncer> {
+impl<Noncer: Iterator<Item = u32>> Hashes<Noncer> for CryptoNight2<Noncer> {
     fn set_blob(&mut self, blob: Vec<u8>, noncer: Noncer) {
         self.blob = blob;
         self.noncer = noncer;
@@ -262,7 +281,7 @@ impl<Noncer: Iterator<Item = u32>> CryptoNightXtl<Noncer> {
     }
 }
 
-impl<Noncer: Iterator<Item = u32>> Hasher<Noncer> for CryptoNightXtl<Noncer> {
+impl<Noncer: Iterator<Item = u32>> Hashes<Noncer> for CryptoNightXtl<Noncer> {
     fn set_blob(&mut self, blob: Vec<u8>, noncer: Noncer) {
         self.blob = blob;
         self.noncer = noncer;
@@ -317,7 +336,7 @@ impl<Noncer: Iterator<Item = u32>> CryptoNightLite<Noncer> {
     }
 }
 
-impl<Noncer: Iterator<Item = u32>> Hasher<Noncer> for CryptoNightLite<Noncer> {
+impl<Noncer: Iterator<Item = u32>> Hashes<Noncer> for CryptoNightLite<Noncer> {
     fn set_blob(&mut self, blob: Vec<u8>, noncer: Noncer) {
         self.blob = blob;
         self.noncer = noncer;
@@ -376,7 +395,7 @@ impl<Noncer: Iterator<Item = u32>> CryptoNightLite2<Noncer> {
     }
 }
 
-impl<Noncer: Iterator<Item = u32>> Hasher<Noncer> for CryptoNightLite2<Noncer> {
+impl<Noncer: Iterator<Item = u32>> Hashes<Noncer> for CryptoNightLite2<Noncer> {
     fn set_blob(&mut self, blob: Vec<u8>, noncer: Noncer) {
         self.blob = blob;
         self.noncer = noncer;
@@ -437,7 +456,7 @@ impl<Noncer: Iterator<Item = u32>> CryptoNightLiteV1<Noncer> {
     }
 }
 
-impl<Noncer: Iterator<Item = u32>> Hasher<Noncer> for CryptoNightLiteV1<Noncer> {
+impl<Noncer: Iterator<Item = u32>> Hashes<Noncer> for CryptoNightLiteV1<Noncer> {
     fn set_blob(&mut self, blob: Vec<u8>, noncer: Noncer) {
         self.blob = blob;
         self.noncer = noncer;
@@ -492,7 +511,7 @@ impl<Noncer: Iterator<Item = u32>> CryptoNightHeavy<Noncer> {
     }
 }
 
-impl<Noncer: Iterator<Item = u32>> Hasher<Noncer> for CryptoNightHeavy<Noncer> {
+impl<Noncer: Iterator<Item = u32>> Hashes<Noncer> for CryptoNightHeavy<Noncer> {
     fn set_blob(&mut self, blob: Vec<u8>, noncer: Noncer) {
         self.blob = blob;
         self.noncer = noncer;
@@ -504,6 +523,7 @@ impl<Noncer: Iterator<Item = u32>> Hasher<Noncer> for CryptoNightHeavy<Noncer> {
         self.transplode()
     }
 }
+*/
 
 #[cfg(test)]
 mod tests {
@@ -511,21 +531,7 @@ mod tests {
 
     use hex_literal::{hex, hex_impl};
 
-    // "official" slow_hash test vectors, from tests-slow-1.txt
-    const INPUT0: &[u8] = &hex!(
-        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-    );
-    const INPUT1: &[u8] = &hex!("00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
-    const INPUT2: &[u8] = &hex!("8519e039172b0d70e5ca7b3383d6b3167315a422747b73f019cf9528f0fde341fd0f2a63030ba6450525cf6de31837669af6f1df8131faf50aaab8d3a7405589");
-    const INPUT3: &[u8] = &hex!("37a636d7dafdf259b7287eddca2f58099e98619d2f99bdb8969d7b14498102cc065201c8be90bd777323f449848b215d2977c92c4c1c2da36ab46b2e389689ed97c18fec08cd3b03235c5e4c62a37ad88c7b67932495a71090e85dd4020a9300");
-    const INPUT4: &[u8] = &hex!(
-        "38274c97c45a172cfc97679870422e3a1ab0784960c60514d816271415c306ee3a3ed1a77e31f6a885c3cb"
-    );
-    const OUTPUT0: &[u8] = &hex!("b5a7f63abb94d07d1a6445c36c07c7e8327fe61b1647e391b4c7edae5de57a3d");
-    const OUTPUT1: &[u8] = &hex!("80563c40ed46575a9e44820d93ee095e2851aa22483fd67837118c6cd951ba61");
-    const OUTPUT2: &[u8] = &hex!("5bb40c5880cef2f739bdb6aaaf16161eaae55530e7b10d7ea996b751a299e949");
-    const OUTPUT3: &[u8] = &hex!("613e638505ba1fd05f428d5c9f8e08f8165614342dac419adc6a47dce257eb3e");
-    const OUTPUT4: &[u8] = &hex!("ed082e49dbd5bbe34a3726a0d1dad981146062b39d36d62c71eb1ed8ab49459b");
+    /*
     const LITEOU0: &[u8] = &hex!("f2360d43b1c6c343e9f53da17e213a51325b05e7909ae9405f828ee45b8282f4");
     const LITEOU1: &[u8] = &hex!("4c3428f39e1f9ecda3b0726fd4f4fca62843597c480f033ae38d113282b273bf");
     const LITEOU2: &[u8] = &hex!("f828ff6bf19a6e72a77319808e43f745f90f47eceb698e4319d2484404b081e8");
@@ -579,20 +585,44 @@ mod tests {
     const CN2OU7: &[u8] = &hex!("30c262cf4592136088dcf1064b732c29550b46accf54d7993d8532f5a5a9e0f3");
     const CN2OU8: &[u8] = &hex!("88536691d2d8eb6c8dfbb2597ab50fbbd9f8c2834281e1bb70616f48094d68c8");
     const CN2OU9: &[u8] = &hex!("5964da99f4a273393e464f40070122f045eecfed1309ac25dd322e1fb052dc45");
+    */
 
+    const INPUT: &[&[u8]] = &[
+        &hex!("00000000000000000000000000000000000000000000000000000000000000000000000000000000000000"),
+        &hex!("00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"),
+        &hex!("8519e039172b0d70e5ca7b3383d6b3167315a422747b73f019cf9528f0fde341fd0f2a63030ba6450525cf6de31837669af6f1df8131faf50aaab8d3a7405589"),
+        &hex!("37a636d7dafdf259b7287eddca2f58099e98619d2f99bdb8969d7b14498102cc065201c8be90bd777323f449848b215d2977c92c4c1c2da36ab46b2e389689ed97c18fec08cd3b03235c5e4c62a37ad88c7b67932495a71090e85dd4020a9300"),
+        &hex!("38274c97c45a172cfc97679870422e3a1ab0784960c60514d816271415c306ee3a3ed1a77e31f6a885c3cb"),
+    ];
 
-    fn test_cn(input: &[u8], output: &[u8], nonce: u32) {
-        assert_eq!(
-            &((&mut CryptoNight::new(input.iter().cloned().collect(), nonce..) as &mut Hasher<_>)
-                .next_hash())[..],
-            output
-        );
+    fn test_independent_cases(hasher: &mut Hasher, input: &[&[u8]], output: &[[u8; 32]]) {
+        assert_eq!(input.len(), output.len());
+        for (&blob, &expected) in input.iter().zip(output) {
+            let nonce = LE::read_u32(&blob[39..43]);
+            let mut hashes = hasher.hashes(blob.to_owned().into_boxed_slice(), nonce..);
+            assert_eq!(hashes.next(), Some(expected));
+        }
     }
 
+    #[test]
+    fn test_cn() {
+        // "official" slow_hash test vectors, from tests-slow-1.txt
+        const OUTPUT: &[[u8; 32]] = &[
+            hex!("b5a7f63abb94d07d1a6445c36c07c7e8327fe61b1647e391b4c7edae5de57a3d"),
+            hex!("80563c40ed46575a9e44820d93ee095e2851aa22483fd67837118c6cd951ba61"),
+            hex!("5bb40c5880cef2f739bdb6aaaf16161eaae55530e7b10d7ea996b751a299e949"),
+            hex!("613e638505ba1fd05f428d5c9f8e08f8165614342dac419adc6a47dce257eb3e"),
+            hex!("ed082e49dbd5bbe34a3726a0d1dad981146062b39d36d62c71eb1ed8ab49459b"),
+        ];
+        let mut hasher = Hasher::new(Algo::Cn1, &HasherConfig { n: 1 });
+        test_independent_cases(&mut hasher, INPUT, OUTPUT);
+    }
+
+    /*
     fn test_cnl(input: &[u8], output: &[u8], nonce: u32) {
         assert_eq!(
             &((&mut CryptoNightLite::new(input.iter().cloned().collect(), nonce..)
-                as &mut Hasher<_>)
+                as &mut Hashes<_>)
                 .next_hash())[..],
             output
         );
@@ -601,7 +631,7 @@ mod tests {
     fn test_cnl_v1(input: &[u8], output: &[u8], nonce: u32) {
         assert_eq!(
             &((&mut CryptoNightLiteV1::new(input.iter().cloned().collect(), nonce..)
-                as &mut Hasher<_>)
+                as &mut Hashes<_>)
                 .next_hash())[..],
             output
         );
@@ -610,7 +640,7 @@ mod tests {
     fn test_cnl_x2(input: &[u8], output: &[u8], nonce: u32) {
         assert_eq!(
             &((&mut CryptoNightLite2::new(input.iter().cloned().collect(), nonce..)
-                as &mut Hasher<_>)
+                as &mut Hashes<_>)
                 .next_hash())[..],
             output
         );
@@ -619,7 +649,7 @@ mod tests {
     fn test_cnh(input: &[u8], output: &[u8], nonce: u32) {
         assert_eq!(
             &((&mut CryptoNightHeavy::new(input.iter().cloned().collect(), nonce..)
-                as &mut Hasher<_>)
+                as &mut Hashes<_>)
                 .next_hash())[..],
             output
         );
@@ -627,37 +657,14 @@ mod tests {
 
     fn test_xtl(input: &[u8], output: &[u8], nonce: u32) {
         assert_eq!(
-            &((&mut CryptoNightXtl::new(input.iter().cloned().collect(), nonce..) as &mut Hasher<_>)
+            &((&mut CryptoNightXtl::new(input.iter().cloned().collect(), nonce..) as &mut Hashes<_>)
                 .next_hash())[..],
             output
         );
     }
+    */
 
-    #[test]
-    fn test_cn_0() {
-        test_cn(INPUT0, OUTPUT0, 0);
-    }
-
-    #[test]
-    fn test_cn_1() {
-        test_cn(INPUT1, OUTPUT1, 0);
-    }
-
-    #[test]
-    fn test_cn_2() {
-        test_cn(INPUT2, OUTPUT2, 0xcf250545);
-    }
-
-    #[test]
-    fn test_cn_3() {
-        test_cn(INPUT3, OUTPUT3, 0xf4237377);
-    }
-
-    #[test]
-    fn test_cn_4() {
-        test_cn(INPUT4, OUTPUT4, 0xcbc385a8);
-    }
-
+    /*
     #[test]
     fn test_cnl_0() {
         test_cnl(INPUT0, LITEOU0, 0);
@@ -711,9 +718,9 @@ mod tests {
     #[test]
     fn test_cnl_cnl_x2() {
         for (cnl, cnlx2) in (&mut CryptoNightLite::new(INPUT3.iter().cloned().collect(), 0..)
-            as &mut Hasher<_>)
+            as &mut Hashes<_>)
             .zip(
-                &mut CryptoNightLite2::new(INPUT3.iter().cloned().collect(), 0..) as &mut Hasher<_>,
+                &mut CryptoNightLite2::new(INPUT3.iter().cloned().collect(), 0..) as &mut Hashes<_>,
             )
             .take(5)
         {
@@ -795,4 +802,5 @@ mod tests {
     fn test_xtl_4() {
         test_xtl(INPUT4, XTLOUT4, 0xcbc385a8);
     }
+    */
 }
