@@ -1,7 +1,5 @@
 // copyright 2017 Kaz Wesley
 
-#![feature(type_ascription)]
-
 #[macro_use]
 extern crate serde_derive;
 
@@ -145,7 +143,7 @@ impl<Noncer: Iterator<Item = u32>> CryptoNight<Noncer> {
     fn transplode(&mut self, memory: &mut [i64x2], blob: &mut [u8]) -> GenericArray<u8, U32> {
         set_nonce(blob, self.noncer.next().unwrap());
         self.state.1 = State::from(sha3::Keccak256Full::digest(blob));
-        self.tweak = LE::read_u64(&blob[35..43]) ^ ((&self.state.1).into(): &[u64; 25])[24];
+        self.tweak = LE::read_u64(&blob[35..43]) ^ <&[u64; 25]>::from(&self.state.1)[24];
         cn_aesni::transplode(
             (&mut self.state.0).into(),
             &mut memory[..],
