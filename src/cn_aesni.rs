@@ -1,140 +1,129 @@
 // copyright 2017 Kaz Wesley
 
-use crate::aesni;
-use std::os::raw::c_void;
-use std::arch::x86_64::__m128i as i64x2;
+use std::arch::x86_64::*;
 
-#[link(name = "cnaesni")]
-extern "C" {
-    pub fn cn_mix_v1_x1(memory: *mut c_void, from: *const c_void, tweak: u64);
-    /*
-    pub fn cn_mix_v1xtl_x1(memory: *mut c_void, from: *const c_void, tweak: u64);
-    pub fn cn_mix_v1_x2(memory: *mut c_void, from0: *const c_void, from1: *const c_void, tweak0: u64, tweak1: u64);
-    pub fn cnl_mix_v0_x1(memory: *mut c_void, from: *const c_void);
-    pub fn cnl_mix_v0_x2(memory: *mut c_void, from0: *const c_void, from1: *const c_void);
-    pub fn cnl_mix_v1_x1(memory: *mut c_void, from: *const c_void);
-    pub fn cnh_mix(memory: *mut c_void, from: *const c_void);
-    */
-    pub fn cn_transplode(
-        key_into: *const c_void,
-        key_from: *const c_void,
-        memory: *mut c_void,
-        into: *mut c_void,
-        from: *const c_void,
-        mem_end: *mut c_void,
-    );
-    /*
-    pub fn cnh_transplode(
-        key_into: *const c_void,
-        key_from: *const c_void,
-        memory: *mut c_void,
-        into: *mut c_void,
-        from: *const c_void,
-        mem_end: *mut c_void,
-    );
-    */
-}
-
-pub fn mix(memory: &mut [i64x2], from: &[i64x2], tweak: u64) {
-    assert_eq!(memory.len(), 1 << 17);
+pub fn mix(memory: &mut [__m128i], from: &[__m128i], tweak: u64) {
+//pub fn mix(memory: &mut [__m128i], from: &[__m128i]) {
     unsafe {
-        cn_mix_v1_x1(
-            memory.as_mut_ptr() as *mut c_void,
-            from.as_ptr() as *const c_void,
-            tweak,
-        );
+        mix_inner(memory, from, tweak);
     }
 }
 
-/*
-pub fn mix_xtl(memory: &mut [i64x2; 1 << 17], from: &[i64x2], tweak: u64) {
-    unsafe {
-        cn_mix_v1xtl_x1(
-            memory.as_mut_ptr() as *mut c_void,
-            from.as_ptr() as *const c_void,
-            tweak,
-        );
+const ITERS: u32 = 0x80000;
+const ARENA: u32 = 0x200000;
+
+fn mul64(x: u64, y: u64) -> (u64, u64) {
+    let lo = x.wrapping_mul(y);
+    let hi = ((x as u128).wrapping_mul(y as u128) >> 64) as u64;
+    (lo, hi)
+}
+
+#[target_feature(enable = "aes", enable = "sse4.1", enable = "sse4.2")]
+unsafe fn mix_inner(mem: &mut [__m128i], from: &[__m128i], tweak: u64) {
+//unsafe fn mix_inner(mem: &mut [__m128i], from: &[__m128i]) {
+    let mut x1 = _mm_xor_si128(from[0], from[2]);
+    let mut x2 = _mm_xor_si128(from[1], from[3]);
+    let mut r8 = _mm_extract_epi64(x1, 0) as u32;
+    let mut bx = r8;
+    // cnv1
+    let (x5, x7);
+    {
+        const TWEAK_MAGIC: u8 = 0x10;
+        x5 = _mm_insert_epi64(_mm_xor_si128(x1, x1), tweak as i64, 1);
+        x7 = _mm_insert_epi8(_mm_xor_si128(x1, x1), TWEAK_MAGIC as i32, 11);
+    }
+    for _ in 0..ITERS {
+        bx &= ARENA - 0x10;
+        let x0 = *mem.get_unchecked((bx >> 4) as usize);
+        let x0 = _mm_aesenc_si128(x0, x1);
+        x2 = _mm_xor_si128(x2, x0);
+        // cnv1
+        {
+            let mut x6 = x2;
+            let x3 = _mm_and_si128(x7, x2);
+            x2 = _mm_slli_epi32(x2, 4);
+            let x4 = _mm_and_si128(x7, x2);
+            x2 = _mm_andnot_si128(x2, x3);
+            x2 = _mm_add_epi64(x2, x2);
+            x2 = _mm_xor_si128(x2, x6);
+            x6 = _mm_srli_epi32(x6, 1);
+            x6 = _mm_andnot_si128(x6, x4);
+            x6 = _mm_xor_si128(x6, x7);
+            x2 = _mm_xor_si128(x2, x6);
+        }
+        *mem.get_unchecked_mut((bx >> 4) as usize) = x2;
+        let ax = _mm_extract_epi64(x0, 0) as u64;
+        let si = (ax as u32) & (ARENA - 0x10);
+        let foo: &u64 = std::mem::transmute(mem.get_unchecked((si >> 4) as usize));
+        let r9 = *foo;
+        let (ax, dx) = mul64(ax, r9);
+        bx = r8.wrapping_add(dx as u32) ^ r9 as u32;
+        r8 = r8.wrapping_add(dx as u32) ^ r9 as u32;
+        let x4;
+        { // cnv1
+            x4 = _mm_xor_si128(x5, *mem.get_unchecked((si >> 4) as usize));
+        }
+        /*{ // cnv0
+            x4 = *mem.get_unchecked((si >> 4) as usize);
+        }*/
+        x1 = _mm_add_epi64(x1, _mm_set_epi64x(ax as i64, dx as i64));
+        // cnv1
+        {
+            x1 = _mm_xor_si128(x1, x5);
+        }
+        *mem.get_unchecked_mut((si >> 4) as usize) = x1;
+        x1 = _mm_xor_si128(x1, x4);
+        x2 = x0;
     }
 }
 
-pub fn mix_x2(memory: &mut [[i64x2; 1 << 17]; 2], from0: &[i64x2], tweak0: u64, from1: &[i64x2], tweak1: u64) {
-    unsafe {
-        cn_mix_v1_x2(
-            memory.as_mut_ptr() as *mut c_void,
-            from0.as_ptr() as *const c_void,
-            from1.as_ptr() as *const c_void,
-            tweak0,
-            tweak1,
-        );
+pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
+    unsafe { transplode_inner(into, mem, from); }
+}
+
+#[target_feature(enable = "aes")]
+unsafe fn transplode_inner(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
+    let key_into = genkey(into[2], into[3]);
+    let key_from = genkey(from[0], from[1]);
+    let into: &mut [__m128i; 8] = std::mem::transmute(&mut into[4]);
+    let from: &[__m128i; 8] = std::mem::transmute(&from[4]);
+    let from = &mut from.clone();
+    for m in mem.chunks_exact_mut(8) {
+        for (i, m) in into.iter_mut().zip(m.iter()) { *i = _mm_xor_si128(*i, *m); }
+        for k in key_into.iter() {
+            for i in into.iter_mut() { *i = _mm_aesenc_si128(*i, *k); }
+        }
+        for k in key_from.iter() {
+            for f in from.iter_mut() { *f = _mm_aesenc_si128(*f, *k); }
+        }
+        for (f, m) in from.iter().zip(m) { *m = *f; }
     }
 }
 
-pub fn mix_lite(memory: &mut [i64x2; 1 << 16], from: &[i64x2]) {
-    unsafe {
-        cnl_mix_v0_x1(
-            memory.as_mut_ptr() as *mut c_void,
-            from.as_ptr() as *const c_void,
-        );
-    }
+macro_rules! round_term {
+    ($round:expr, $mask:expr, $in:ident) => {{
+        _mm_shuffle_epi32(_mm_aeskeygenassist_si128($in, $round), $mask)
+    }};
 }
 
-pub fn mix_lite_v1(memory: &mut [i64x2; 1 << 16], from: &[i64x2]) {
-    unsafe {
-        cnl_mix_v1_x1(
-            memory.as_mut_ptr() as *mut c_void,
-            from.as_ptr() as *const c_void,
-        );
+#[target_feature(enable = "aes")]
+unsafe fn genkey(k0: __m128i, k1: __m128i) -> [__m128i; 10] {
+    unsafe fn update_key(xmm0: __m128i, xmm2: __m128i) -> __m128i {
+        let xmm3 = _mm_slli_si128(xmm0, 0x4);
+        let xmm0 = _mm_xor_si128(xmm0, xmm3);
+        let xmm3 = _mm_slli_si128(xmm3, 0x4);
+        let xmm0 = _mm_xor_si128(xmm0, xmm3);
+        let xmm3 = _mm_slli_si128(xmm3, 0x4);
+        let xmm0 = _mm_xor_si128(xmm0, xmm3);
+        _mm_xor_si128(xmm0, xmm2)
     }
+    let k2 = update_key(k0, round_term!(0x01, 0xFF, k1));
+    let k3 = update_key(k1, round_term!(0x00, 0xAA, k2));
+    let k4 = update_key(k2, round_term!(0x02, 0xFF, k3));
+    let k5 = update_key(k3, round_term!(0x00, 0xAA, k4));
+    let k6 = update_key(k4, round_term!(0x04, 0xFF, k5));
+    let k7 = update_key(k5, round_term!(0x00, 0xAA, k6));
+    let k8 = update_key(k6, round_term!(0x08, 0xFF, k7));
+    let k9 = update_key(k7, round_term!(0x00, 0xAA, k8));
+    [k0, k1, k2, k3, k4, k5, k6, k7, k8, k9]
 }
-
-pub fn mix_heavy(memory: &mut [i64x2; 1 << 18], from: &[i64x2]) {
-    unsafe {
-        cnh_mix(
-            memory.as_mut_ptr() as *mut c_void,
-            from.as_ptr() as *const c_void,
-        );
-    }
-}
-
-pub fn mix_lite_x2(memory: &mut [[i64x2; 1 << 16]; 2], from0: &[i64x2], from1: &[i64x2]) {
-    unsafe {
-        cnl_mix_v0_x2(
-            memory.as_mut_ptr() as *mut c_void,
-            from0.as_ptr() as *const c_void,
-            from1.as_ptr() as *const c_void,
-        );
-    }
-}
-*/
-
-pub fn transplode(into: &mut [i64x2], memory: &mut [i64x2], from: &[i64x2]) {
-    let key_into = aesni::genkey(into[2], into[3]);
-    let key_from = aesni::genkey(from[0], from[1]);
-    unsafe {
-        cn_transplode(
-            key_into[..].as_ptr() as *const c_void,
-            key_from[..].as_ptr() as *const c_void,
-            memory.as_mut_ptr() as *mut c_void,
-            into[4..].as_mut_ptr() as *mut c_void,
-            from[4..].as_ptr() as *const c_void,
-            memory.as_mut_ptr().add(memory.len()) as *mut c_void,
-        );
-    }
-}
-
-/*
-pub fn transplode_heavy(into: &mut [i64x2], memory: &mut [i64x2], from: &[i64x2]) {
-    let key_into = aesni::genkey(into[2], into[3]);
-    let key_from = aesni::genkey(from[0], from[1]);
-    unsafe {
-        cnh_transplode(
-            key_into[..].as_ptr() as *const c_void,
-            key_from[..].as_ptr() as *const c_void,
-            memory.as_mut_ptr() as *mut c_void,
-            into[4..].as_mut_ptr() as *mut c_void,
-            from[4..].as_ptr() as *const c_void,
-            memory.as_mut_ptr().add(memory.len()) as *mut c_void,
-        );
-    }
-}
-*/

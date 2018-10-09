@@ -3,7 +3,6 @@ name = "yellowsun"
 version = "0.1.0"
 authors = ["Kaz Wesley <keziahw@gmail.com>"]
 license = "MIT/Apache-2.0"
-build = "build.rs"
 edition = "2018"
 
 [dependencies]
@@ -14,8 +13,6 @@ keccak = "0.1.0"
 blake = { git = "git://github.com/kazcw/RustCrypto-hashes", branch = "master", version = "0.1.0" }
 skein = { git = "git://github.com/kazcw/RustCrypto-hashes", branch = "master", version = "0.2.2" }
 sha3 = { git = "git://github.com/kazcw/RustCrypto-hashes", branch = "master" }
-serde = "1"
-serde_derive = "1"
 byteorder = "1"
 
 [dev-dependencies]
