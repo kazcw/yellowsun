@@ -108,8 +108,8 @@ pub fn mix_lite_x2(memory: &mut [[i64x2; 1 << 16]; 2], from0: &[i64x2], from1: &
 */
 
 pub fn transplode(into: &mut [i64x2], memory: &mut [i64x2], from: &[i64x2]) {
-    let key_into = aesni::genkey(&into[2..4]);
-    let key_from = aesni::genkey(&from[0..2]);
+    let key_into = aesni::genkey(into[2], into[3]);
+    let key_from = aesni::genkey(from[0], from[1]);
     unsafe {
         cn_transplode(
             key_into[..].as_ptr() as *const c_void,
@@ -124,8 +124,8 @@ pub fn transplode(into: &mut [i64x2], memory: &mut [i64x2], from: &[i64x2]) {
 
 /*
 pub fn transplode_heavy(into: &mut [i64x2], memory: &mut [i64x2], from: &[i64x2]) {
-    let key_into = aesni::genkey(&into[2..4]);
-    let key_from = aesni::genkey(&from[0..2]);
+    let key_into = aesni::genkey(into[2], into[3]);
+    let key_from = aesni::genkey(from[0], from[1]);
     unsafe {
         cnh_transplode(
             key_into[..].as_ptr() as *const c_void,

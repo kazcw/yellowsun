@@ -1,6 +1,5 @@
 // copyright 2017 Kaz Wesley
 
-#![feature(asm)]
 #![feature(type_ascription)]
 
 #[macro_use]
