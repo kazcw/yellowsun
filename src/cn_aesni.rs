@@ -11,6 +11,7 @@ pub fn mix<V: Variant>(memory: &mut [__m128i], from: &[__m128i], variant: V) {
 
 const ITERS: u32 = 0x80000;
 
+#[inline(always)]
 fn mul64(x: u64, y: u64) -> (u64, u64) {
     let lo = x.wrapping_mul(y);
     let hi = (u128::from(x).wrapping_mul(u128::from(y)) >> 64) as u64;
@@ -55,6 +56,7 @@ impl Default for Cnv2 {
    }
 }
 
+#[inline(always)]
 unsafe fn int_sqrt_v2(input: u64) -> u32 {
     let r = {
         let exp_double_bias = _mm_set_epi64x(0, (1023u64 << 52) as i64);
@@ -94,6 +96,7 @@ impl Variant for Cnv2 {
         let sqr = state[13] as u32;
         Cnv2 { bb1, div, sqr }
     }
+    #[inline(always)]
     fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i) {
         unsafe {
             let c1 = *mem.get_unchecked((j ^ 1) as usize);
@@ -104,6 +107,7 @@ impl Variant for Cnv2 {
             *mem.get_unchecked_mut((j ^ 3) as usize) = _mm_add_epi64(c2, aa);
         }
     }
+    #[inline(always)]
     fn pre_mul(&mut self, mut b0: u64, c0: u64, c1: u64) -> u64 {
         b0 ^= self.div ^ (u64::from(self.sqr) << 32);
         let dividend: u64 = c1;
@@ -112,6 +116,7 @@ impl Variant for Cnv2 {
         self.sqr = unsafe { int_sqrt_v2(c0.wrapping_add(self.div)) };
         b0
     }
+    #[inline(always)]
     unsafe fn post_mul(&mut self, mem: *mut u64, j: u32, mut lo: u64, mut hi: u64) -> (u64, u64) {
         let j = j as usize;
         *mem.add(j ^ 2) ^= hi;
@@ -120,9 +125,11 @@ impl Variant for Cnv2 {
         lo ^= *mem.add(j ^ 4).add(1);
         (lo, hi)
     }
+    #[inline(always)]
     fn end_iter(&mut self, bb: __m128i) {
         self.bb1 = bb;
     }
+    #[inline(always)]
     fn mem_size() -> u32 { 0x20_0000 }
 }
 
