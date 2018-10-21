@@ -1,10 +1,11 @@
 // copyright 2017 Kaz Wesley
 
 use std::arch::x86_64::*;
+use std::fmt::Debug;
 
-pub fn mix<Variant>(memory: &mut [__m128i], from: &[__m128i], variant: Variant) {
+pub fn mix<V: Variant>(memory: &mut [__m128i], from: &[__m128i], variant: V) {
     unsafe {
-        mix_inner(memory, from, Cnv2::default());
+        mix_inner(memory, from, variant);
     }
 }
 
@@ -16,73 +17,178 @@ fn mul64(x: u64, y: u64) -> (u64, u64) {
     (lo, hi)
 }
 
-pub trait Variant: Default + Clone {
-    fn new(_blob: &[u8], _state: &[u64; 25]) -> Self;
-    fn shuffle_add(_mem: &mut [__m128i], _offs: u32);
+pub trait Variant: Default + Clone + Debug {
+    fn new(blob: &[u8], state: &[u64; 25]) -> Self;
+    fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i);
+    fn pre_mul(&mut self, b0: u64, c0: u64, c1: u64) -> u64;
+    unsafe fn post_mul(&mut self, mem: *mut u64, j: u32, lo: u64, hi: u64) -> (u64, u64);
+    fn end_iter(&mut self, bb: __m128i);
     fn mem_size() -> u32;
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct Cnv0;
 
 impl Variant for Cnv0 {
     fn new(_blob: &[u8], _state: &[u64; 25]) -> Self { Cnv0 }
-    fn shuffle_add(_mem: &mut [__m128i], _offs: u32) {}
+    fn shuffle_add(&mut self, _mem: &mut [__m128i], _j: u32, _bb: __m128i, _aa: __m128i) {}
+    fn pre_mul(&mut self, b0: u64, _c0: u64, _c1: u64) -> u64 { b0 }
+    unsafe fn post_mul(&mut self, _mem: *mut u64, _j: u32, lo: u64, hi: u64) -> (u64, u64) { (lo, hi) }
+    fn end_iter(&mut self, _bb: __m128i) {}
     fn mem_size() -> u32 { 0x20_0000 }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone, Debug)]
 pub struct Cnv2 {
-    b2: u64,
-    b3: u64,
+    bb1: __m128i,
     div: u64,
     sqr: u64,
 }
 
+impl Default for Cnv2 {
+    fn default() -> Self {
+        Cnv2 {
+            bb1: unsafe { _mm_set_epi64x(0, 0) },
+            div: 0,
+            sqr: 0,
+        }
+   }
+}
+
+unsafe fn int_sqrt_v2(input: u64) -> u64 {
+    //let r = ((input as f64 + 18446744073709551616.0).sqrt() * 2.0 - 8589934592.0) as u64;
+
+    let r = {
+        let exp_double_bias = _mm_set_epi64x(0, (1023u64 << 52) as i64);
+        let x = std::mem::transmute(_mm_add_epi64(_mm_cvtsi64_si128((input >> 12) as i64), exp_double_bias));
+        let x = _mm_sqrt_sd(_mm_setzero_pd(), x);
+        (_mm_cvtsi128_si64(_mm_sub_epi64(std::mem::transmute(x), exp_double_bias)) as u64) >> 19
+    };
+
+    let s = r >> 1;
+    let b = r & 1;
+    let r2 = s.wrapping_mul(s + b).wrapping_add(r << 32);
+    r.wrapping_add((r2.wrapping_add(1 << 32) < input.wrapping_sub(s)) as u64).wrapping_sub((r2.wrapping_add(b) > input) as u64)
+}
+// XXX: seems sqr could be u32?
+
+#[cfg(test)]
+#[test]
+fn test_int_sqrt() {
+    unsafe {
+        assert_eq!(int_sqrt_v2(0), 0);
+        assert_eq!(int_sqrt_v2(1 << 32), 0);
+        assert_eq!(int_sqrt_v2((1 << 32) + 1), 1);
+        assert_eq!(int_sqrt_v2(1 << 50), 262140);
+        assert_eq!(int_sqrt_v2((1 << 55) + 20963331), 8384515);
+        assert_eq!(int_sqrt_v2((1 << 55) + 20963332), 8384516);
+        assert_eq!(int_sqrt_v2((1 << 62) + 26599786), 1013904242);
+        assert_eq!(int_sqrt_v2((1 << 62) + 26599787), 1013904243);
+        assert_eq!(int_sqrt_v2(-1i64 as u64), 3558067407);
+    }
+}
+
 impl Variant for Cnv2 {
     fn new(_blob: &[u8], state: &[u64; 25]) -> Self {
-        let state: &[u64; 25] = state.into();
         let b2 = state[8] ^ state[10];
         let b3 = state[9] ^ state[11];
+        let bb1 = unsafe { _mm_set_epi64x(b3 as i64, b2 as i64) };
         let div = state[12];
         let sqr = state[13];
-        Cnv2 { b2, b3, div, sqr }
+        Cnv2 { bb1, div, sqr }
     }
-    fn shuffle_add(mem: &mut [__m128i], offs: u32) {
-        let c1 = mem[(offs ^ 1) as usize];
-        let c2 = mem[(offs ^ 2) as usize];
-        let c3 = mem[(offs ^ 3) as usize];
-        /*
-        mem[(offs ^ 1) as usize] = _mm_add_epi64(c3, _b1);
-        mem[(offs ^ 2) as usize] = _mm_add_epi64(c1, _b);
-        mem[(offs ^ 3) as usize] = _mm_add_epi64(c2, _a);
-        */
+    fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i) {
+        let c1 = mem[(j ^ 1) as usize];
+        let c2 = mem[(j ^ 2) as usize];
+        let c3 = mem[(j ^ 3) as usize];
+        unsafe {
+            mem[(j ^ 1) as usize] = _mm_add_epi64(c3, self.bb1);
+            mem[(j ^ 2) as usize] = _mm_add_epi64(c1, bb);
+            mem[(j ^ 3) as usize] = _mm_add_epi64(c2, aa);
+        }
+    }
+    fn pre_mul(&mut self, mut b0: u64, c0: u64, c1: u64) -> u64 {
+        b0 ^= self.div ^ (self.sqr << 32);
+        let dividend: u64 = c1;
+        let divisor = ((c0 as u32).wrapping_add((self.sqr as u32) << 1)) | 0x8000_0001;
+        self.div = u64::from((dividend / u64::from(divisor)) as u32) + ((dividend % u64::from(divisor)) << 32);
+        self.sqr = unsafe { int_sqrt_v2(c0.wrapping_add(self.div)) };
+        b0
+    }
+    unsafe fn post_mul(&mut self, mem: *mut u64, j: u32, mut lo: u64, mut hi: u64) -> (u64, u64) {
+        let j = j as usize;
+        *mem.add(j ^ 2) ^= hi;
+        *mem.add(j ^ 2).add(1) ^= lo;
+        hi ^= *mem.add(j ^ 4);
+        lo ^= *mem.add(j ^ 4).add(1);
+        (lo, hi)
+    }
+    fn end_iter(&mut self, bb: __m128i) {
+        self.bb1 = bb;
     }
     fn mem_size() -> u32 { 0x20_0000 }
 }
 
+const DEBUG_ITERS: u32 = 3;
+
+fn print_line(mem: &mut [__m128i], j: u32) {
+    let j = j as usize;
+    eprintln!("[j]={:x?}", mem[j]);
+    eprintln!("[j ^ 1]={:x?}", mem[j ^ 1]);
+    eprintln!("[j ^ 2]={:x?}", mem[j ^ 2]);
+    eprintln!("[j ^ 3]={:x?}", mem[j ^ 3]);
+}
+
 #[target_feature(enable = "aes", enable = "sse4.1", enable = "sse4.2")]
-unsafe fn mix_inner(mem: &mut [__m128i], from: &[__m128i], var: Cnv2) {
-    let mut x1 = _mm_xor_si128(from[0], from[2]);
-    let mut x2 = _mm_xor_si128(from[1], from[3]);
-    let mut r8 = _mm_extract_epi64(x1, 0) as u32;
-    for _ in 0..ITERS {
-        let bx = r8 & (Cnv2::mem_size() - 0x10);
-        let x0 = *mem.get_unchecked((bx >> 4) as usize);
-        let x0 = _mm_aesenc_si128(x0, x1);
-        //var.shuffle_add(mem, _, _, x1);
-        x2 = _mm_xor_si128(x2, x0);
-        *mem.get_unchecked_mut((bx >> 4) as usize) = x2;
-        let ax = _mm_extract_epi64(x0, 0) as u64;
-        let si = (ax as u32) & (Cnv2::mem_size() - 0x10);
-        let x4 = *mem.get_unchecked((si >> 4) as usize);
-        let r9 = _mm_extract_epi64(x4, 0) as u64;
-        let (ax, dx) = mul64(ax, r9);
-        r8 = r8.wrapping_add(dx as u32) ^ r9 as u32;
-        x1 = _mm_add_epi64(x1, _mm_set_epi64x(ax as i64, dx as i64));
-        *mem.get_unchecked_mut((si >> 4) as usize) = x1;
-        x1 = _mm_xor_si128(x1, x4);
-        x2 = x0;
+unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: V) {
+    let mut aa = _mm_xor_si128(from[0], from[2]);
+    let mut bb = _mm_xor_si128(from[1], from[3]);
+    let mut a0 = _mm_extract_epi64(aa, 0) as u32;
+    for i in 0..ITERS {
+        let j = (a0 & (Cnv2::mem_size() - 0x10)) >> 4;
+        if i < DEBUG_ITERS {
+            eprintln!("{}: aes j: {:x}", i, j << 4);
+        }
+        let cc = mem[j as usize];
+        let cc = _mm_aesenc_si128(cc, aa);
+        var.shuffle_add(mem, j, bb, aa);
+        if i < DEBUG_ITERS {
+            eprintln!("{}: shuffleadd1: _b={:x?} _a={:x?}", i, bb, aa);
+        }
+        mem[j as usize] = _mm_xor_si128(bb, cc);
+        if i < DEBUG_ITERS {
+            eprintln!("{}: after aes:", i);
+            print_line(mem, j);
+        }
+        let c0 = _mm_extract_epi64(cc, 0) as u64;
+        let c1 = _mm_extract_epi64(cc, 1) as u64;
+        let j = ((c0 as u32) & (Cnv2::mem_size() - 0x10)) >> 4;
+        let b0 = *(&mem[j as usize] as *const _ as *const u64);
+        let b1 = *(&mem[j as usize] as *const _ as *const u64).add(1);
+        let b0 = var.pre_mul(b0, c0, c1);
+        if i < DEBUG_ITERS {
+            eprintln!("{}: mul j: {:x}", i, j << 4);
+            eprintln!("{}: post-pre-mul var: {:x?}", i, var);
+        }
+        let (lo, hi) = mul64(c0, b0);
+        let (lo, hi) = var.post_mul(mem.as_mut_ptr() as *mut _, j << 1, lo, hi);
+        if i < DEBUG_ITERS {
+            eprintln!("{}: ({:x}, {:x}) = tweaked_mul({:x}, {:x})", i, lo, hi, c0, b0);
+        }
+        var.shuffle_add(mem, j, bb, aa);
+        a0 = a0.wrapping_add(hi as u32) ^ b0 as u32;
+        aa = _mm_add_epi64(aa, _mm_set_epi64x(lo as i64, hi as i64));
+        mem[j as usize] = aa;
+        if i < DEBUG_ITERS {
+            eprintln!("{}: after mul:", i);
+            print_line(mem, j);
+        }
+        var.end_iter(bb);
+        if i < DEBUG_ITERS {
+            eprintln!("{}: _b1={:x?}", i, bb);
+        }
+        aa = _mm_xor_si128(aa, _mm_set_epi64x(b1 as i64, b0 as i64));
+        bb = cc;
     }
 }
 
