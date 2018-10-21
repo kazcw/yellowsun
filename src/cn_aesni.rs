@@ -42,7 +42,7 @@ impl Variant for Cnv0 {
 pub struct Cnv2 {
     bb1: __m128i,
     div: u64,
-    sqr: u64,
+    sqr: u32,
 }
 
 impl Default for Cnv2 {
@@ -55,7 +55,7 @@ impl Default for Cnv2 {
    }
 }
 
-unsafe fn int_sqrt_v2(input: u64) -> u64 {
+unsafe fn int_sqrt_v2(input: u64) -> u32 {
     let r = {
         let exp_double_bias = _mm_set_epi64x(0, (1023u64 << 52) as i64);
         let x = std::mem::transmute(_mm_add_epi64(_mm_cvtsi64_si128((input >> 12) as i64), exp_double_bias));
@@ -66,9 +66,8 @@ unsafe fn int_sqrt_v2(input: u64) -> u64 {
     let s = r >> 1;
     let b = r & 1;
     let r2 = s.wrapping_mul(s + b).wrapping_add(r << 32);
-    r.wrapping_add((r2.wrapping_add(1 << 32) < input.wrapping_sub(s)) as u64).wrapping_sub((r2.wrapping_add(b) > input) as u64)
+    (r as u32).wrapping_add((r2.wrapping_add(1 << 32) < input.wrapping_sub(s)) as u32).wrapping_sub((r2.wrapping_add(b) > input) as u32)
 }
-// XXX: seems sqr could be u32?
 
 #[cfg(test)]
 #[test]
@@ -92,7 +91,7 @@ impl Variant for Cnv2 {
         let b3 = state[9] ^ state[11];
         let bb1 = unsafe { _mm_set_epi64x(b3 as i64, b2 as i64) };
         let div = state[12];
-        let sqr = state[13];
+        let sqr = state[13] as u32;
         Cnv2 { bb1, div, sqr }
     }
     fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i) {
@@ -106,9 +105,9 @@ impl Variant for Cnv2 {
         }
     }
     fn pre_mul(&mut self, mut b0: u64, c0: u64, c1: u64) -> u64 {
-        b0 ^= self.div ^ (self.sqr << 32);
+        b0 ^= self.div ^ (u64::from(self.sqr) << 32);
         let dividend: u64 = c1;
-        let divisor = ((c0 as u32).wrapping_add((self.sqr as u32) << 1)) | 0x8000_0001;
+        let divisor = ((c0 as u32).wrapping_add(self.sqr << 1)) | 0x8000_0001;
         self.div = u64::from((dividend / u64::from(divisor)) as u32) + ((dividend % u64::from(divisor)) << 32);
         self.sqr = unsafe { int_sqrt_v2(c0.wrapping_add(self.div)) };
         b0
