@@ -95,13 +95,13 @@ impl Variant for Cnv2 {
         Cnv2 { bb1, div, sqr }
     }
     fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i) {
-        let c1 = mem[(j ^ 1) as usize];
-        let c2 = mem[(j ^ 2) as usize];
-        let c3 = mem[(j ^ 3) as usize];
         unsafe {
-            mem[(j ^ 1) as usize] = _mm_add_epi64(c3, self.bb1);
-            mem[(j ^ 2) as usize] = _mm_add_epi64(c1, bb);
-            mem[(j ^ 3) as usize] = _mm_add_epi64(c2, aa);
+            let c1 = *mem.get_unchecked((j ^ 1) as usize);
+            let c2 = *mem.get_unchecked((j ^ 2) as usize);
+            let c3 = *mem.get_unchecked((j ^ 3) as usize);
+            *mem.get_unchecked_mut((j ^ 1) as usize) = _mm_add_epi64(c3, self.bb1);
+            *mem.get_unchecked_mut((j ^ 2) as usize) = _mm_add_epi64(c1, bb);
+            *mem.get_unchecked_mut((j ^ 3) as usize) = _mm_add_epi64(c2, aa);
         }
     }
     fn pre_mul(&mut self, mut b0: u64, c0: u64, c1: u64) -> u64 {
@@ -132,23 +132,23 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
     let mut bb = _mm_xor_si128(from[1], from[3]);
     let mut a0 = _mm_extract_epi64(aa, 0) as u32;
     for i in 0..ITERS {
-        let j = (a0 & (Cnv2::mem_size() - 0x10)) >> 4;
-        let cc = mem[j as usize];
+        let j = (a0 & (V::mem_size() - 0x10)) >> 4;
+        let cc = *mem.get_unchecked(j as usize);
         let cc = _mm_aesenc_si128(cc, aa);
         var.shuffle_add(mem, j, bb, aa);
-        mem[j as usize] = _mm_xor_si128(bb, cc);
+        *mem.get_unchecked_mut(j as usize) = _mm_xor_si128(bb, cc);
         let c0 = _mm_extract_epi64(cc, 0) as u64;
         let c1 = _mm_extract_epi64(cc, 1) as u64;
-        let j = ((c0 as u32) & (Cnv2::mem_size() - 0x10)) >> 4;
-        let b0 = *(&mem[j as usize] as *const _ as *const u64);
-        let b1 = *(&mem[j as usize] as *const _ as *const u64).add(1);
+        let j = ((c0 as u32) & (V::mem_size() - 0x10)) >> 4;
+        let b0 = *(mem.get_unchecked(j as usize) as *const _ as *const u64);
+        let b1 = *(mem.get_unchecked(j as usize) as *const _ as *const u64).add(1);
         let b0 = var.pre_mul(b0, c0, c1);
         let (lo, hi) = mul64(c0, b0);
         let (lo, hi) = var.post_mul(mem.as_mut_ptr() as *mut _, j << 1, lo, hi);
         var.shuffle_add(mem, j, bb, aa);
         a0 = a0.wrapping_add(hi as u32) ^ b0 as u32;
         aa = _mm_add_epi64(aa, _mm_set_epi64x(lo as i64, hi as i64));
-        mem[j as usize] = aa;
+        *mem.get_unchecked_mut(j as usize) = aa;
         var.end_iter(bb);
         aa = _mm_xor_si128(aa, _mm_set_epi64x(b1 as i64, b0 as i64));
         bb = cc;
