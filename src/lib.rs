@@ -34,10 +34,6 @@ fn set_nonce(blob: &mut [u8], nonce: u32) {
     LE::write_u32(&mut blob[39..43], nonce);
 }
 
-pub struct HasherConfig {
-    pub n: u32
-}
-
 #[derive(Debug)]
 pub struct UnknownAlgo{ name: Box<str> }
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -61,13 +57,10 @@ enum Hasher_ {
     //CryptoNight0{ memory: Mmap<[i64x2; 1 << 17]> },
 }
 impl Hasher {
-    pub fn new(algo: Algo, cfg: &HasherConfig) -> Self {
+    pub fn new(algo: Algo) -> Self {
         Hasher(match algo {
-            Algo::Cn1 => match cfg.n {
-                1 => Hasher_::CryptoNight1 { memory: Mmap::default() },
+            Algo::Cn1 => Hasher_::CryptoNight1 { memory: Mmap::default() },
                 //2 => Box::new(CryptoNight2::new(blob, noncer)),
-                _ => unimplemented!("unsupported configuration"),
-            }
             /*
             Algo::Cn0 => match cfg.n {
                 1 => Hasher_::CryptoNight0 { memory: Mmap::default() },
@@ -648,7 +641,7 @@ mod tests {
             hex!("613e638505ba1fd05f428d5c9f8e08f8165614342dac419adc6a47dce257eb3e"),
             hex!("ed082e49dbd5bbe34a3726a0d1dad981146062b39d36d62c71eb1ed8ab49459b"),
         ];
-        let mut hasher = Hasher::new(Algo::Cn1, &HasherConfig { n: 1 });
+        let mut hasher = Hasher::new(Algo::Cn1);
         test_independent_cases(&mut hasher, INPUT, OUTPUT);
     }
 
