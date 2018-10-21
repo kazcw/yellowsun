@@ -2,9 +2,9 @@
 
 use std::arch::x86_64::*;
 
-pub fn mix(memory: &mut [__m128i], from: &[__m128i], tweak: u64) {
+pub fn mix<Variant>(memory: &mut [__m128i], from: &[__m128i], variant: Variant) {
     unsafe {
-        mix_inner(memory, from, tweak);
+        mix_inner(memory, from, Cnv2::default());
     }
 }
 
@@ -16,61 +16,70 @@ fn mul64(x: u64, y: u64) -> (u64, u64) {
     (lo, hi)
 }
 
-struct Cnv1 {
-    x5: __m128i,
-    x7: __m128i,
+pub trait Variant: Default + Clone {
+    fn new(_blob: &[u8], _state: &[u64; 25]) -> Self;
+    fn shuffle_add(_mem: &mut [__m128i], _offs: u32);
+    fn mem_size() -> u32;
 }
 
-impl Cnv1 {
-    #[target_feature(enable = "aes", enable = "sse4.1", enable = "sse4.2")]
-    unsafe fn new(tweak: u64) -> Cnv1 {
-        let x1 = _mm_set_epi64x(0, 0);
-        let x5 = _mm_insert_epi64(_mm_xor_si128(x1, x1), tweak as i64, 1);
-        let x7 = _mm_insert_epi8(_mm_xor_si128(x1, x1), 0x10, 11);
-        Cnv1 { x5, x7 }
+#[derive(Default, Clone)]
+pub struct Cnv0;
+
+impl Variant for Cnv0 {
+    fn new(_blob: &[u8], _state: &[u64; 25]) -> Self { Cnv0 }
+    fn shuffle_add(_mem: &mut [__m128i], _offs: u32) {}
+    fn mem_size() -> u32 { 0x20_0000 }
+}
+
+#[derive(Default, Clone)]
+pub struct Cnv2 {
+    b2: u64,
+    b3: u64,
+    div: u64,
+    sqr: u64,
+}
+
+impl Variant for Cnv2 {
+    fn new(_blob: &[u8], state: &[u64; 25]) -> Self {
+        let state: &[u64; 25] = state.into();
+        let b2 = state[8] ^ state[10];
+        let b3 = state[9] ^ state[11];
+        let div = state[12];
+        let sqr = state[13];
+        Cnv2 { b2, b3, div, sqr }
     }
-    #[target_feature(enable = "aes", enable = "sse4.1", enable = "sse4.2")]
-    unsafe fn tweak1(&self, mut x2: __m128i) -> __m128i {
-        let mut x6 = x2;
-        let x3 = _mm_and_si128(self.x7, x2);
-        x2 = _mm_slli_epi32(x2, 4);
-        let x4 = _mm_and_si128(self.x7, x2);
-        x2 = _mm_andnot_si128(x2, x3);
-        x2 = _mm_add_epi64(x2, x2);
-        x2 = _mm_xor_si128(x2, x6);
-        x6 = _mm_srli_epi32(x6, 1);
-        x6 = _mm_andnot_si128(x6, x4);
-        x6 = _mm_xor_si128(x6, self.x7);
-        _mm_xor_si128(x2, x6)
+    fn shuffle_add(mem: &mut [__m128i], offs: u32) {
+        let c1 = mem[(offs ^ 1) as usize];
+        let c2 = mem[(offs ^ 2) as usize];
+        let c3 = mem[(offs ^ 3) as usize];
+        /*
+        mem[(offs ^ 1) as usize] = _mm_add_epi64(c3, _b1);
+        mem[(offs ^ 2) as usize] = _mm_add_epi64(c1, _b);
+        mem[(offs ^ 3) as usize] = _mm_add_epi64(c2, _a);
+        */
     }
-    unsafe fn tweak2(&self, x4: __m128i) -> __m128i {
-        _mm_xor_si128(x4, self.x5)
-    }
-    const fn mem_size() -> u32 {
-        0x20_0000
-    }
+    fn mem_size() -> u32 { 0x20_0000 }
 }
 
 #[target_feature(enable = "aes", enable = "sse4.1", enable = "sse4.2")]
-unsafe fn mix_inner(mem: &mut [__m128i], from: &[__m128i], tweak: u64) {
+unsafe fn mix_inner(mem: &mut [__m128i], from: &[__m128i], var: Cnv2) {
     let mut x1 = _mm_xor_si128(from[0], from[2]);
     let mut x2 = _mm_xor_si128(from[1], from[3]);
     let mut r8 = _mm_extract_epi64(x1, 0) as u32;
-    let var = Cnv1::new(tweak);
     for _ in 0..ITERS {
-        let bx = r8 & (Cnv1::mem_size() - 0x10);
+        let bx = r8 & (Cnv2::mem_size() - 0x10);
         let x0 = *mem.get_unchecked((bx >> 4) as usize);
         let x0 = _mm_aesenc_si128(x0, x1);
+        //var.shuffle_add(mem, _, _, x1);
         x2 = _mm_xor_si128(x2, x0);
-        *mem.get_unchecked_mut((bx >> 4) as usize) = var.tweak1(x2);
+        *mem.get_unchecked_mut((bx >> 4) as usize) = x2;
         let ax = _mm_extract_epi64(x0, 0) as u64;
-        let si = (ax as u32) & (Cnv1::mem_size() - 0x10);
-        let x4 = var.tweak2(*mem.get_unchecked((si >> 4) as usize));
+        let si = (ax as u32) & (Cnv2::mem_size() - 0x10);
+        let x4 = *mem.get_unchecked((si >> 4) as usize);
         let r9 = _mm_extract_epi64(x4, 0) as u64;
         let (ax, dx) = mul64(ax, r9);
         r8 = r8.wrapping_add(dx as u32) ^ r9 as u32;
         x1 = _mm_add_epi64(x1, _mm_set_epi64x(ax as i64, dx as i64));
-        x1 = var.tweak2(x1);
         *mem.get_unchecked_mut((si >> 4) as usize) = x1;
         x1 = _mm_xor_si128(x1, x4);
         x2 = x0;
