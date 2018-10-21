@@ -56,21 +56,19 @@ unsafe fn mix_inner(mem: &mut [__m128i], from: &[__m128i], tweak: u64) {
     let mut x1 = _mm_xor_si128(from[0], from[2]);
     let mut x2 = _mm_xor_si128(from[1], from[3]);
     let mut r8 = _mm_extract_epi64(x1, 0) as u32;
-    let mut bx = r8;
     let var = Cnv1::new(tweak);
     for _ in 0..ITERS {
-        bx &= Cnv1::mem_size() - 0x10;
+        let bx = r8 & (Cnv1::mem_size() - 0x10);
         let x0 = *mem.get_unchecked((bx >> 4) as usize);
         let x0 = _mm_aesenc_si128(x0, x1);
         x2 = _mm_xor_si128(x2, x0);
         *mem.get_unchecked_mut((bx >> 4) as usize) = var.tweak1(x2);
         let ax = _mm_extract_epi64(x0, 0) as u64;
         let si = (ax as u32) & (Cnv1::mem_size() - 0x10);
-        let r9 = *(mem.get_unchecked((si >> 4) as usize) as *const _ as *const u64);
-        let (ax, dx) = mul64(ax, r9);
-        bx = r8.wrapping_add(dx as u32) ^ r9 as u32;
-        r8 = r8.wrapping_add(dx as u32) ^ r9 as u32;
         let x4 = var.tweak2(*mem.get_unchecked((si >> 4) as usize));
+        let r9 = _mm_extract_epi64(x4, 0) as u64;
+        let (ax, dx) = mul64(ax, r9);
+        r8 = r8.wrapping_add(dx as u32) ^ r9 as u32;
         x1 = _mm_add_epi64(x1, _mm_set_epi64x(ax as i64, dx as i64));
         x1 = var.tweak2(x1);
         *mem.get_unchecked_mut((si >> 4) as usize) = x1;
