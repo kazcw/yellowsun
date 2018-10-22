@@ -138,7 +138,7 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
     let mut aa = _mm_xor_si128(from[0], from[2]);
     let mut bb = _mm_xor_si128(from[1], from[3]);
     let mut a0 = _mm_extract_epi64(aa, 0) as u32;
-    for i in 0..ITERS {
+    for _ in 0..ITERS {
         let j = (a0 & (V::mem_size() - 0x10)) >> 4;
         let cc = *mem.get_unchecked(j as usize);
         let cc = _mm_aesenc_si128(cc, aa);
