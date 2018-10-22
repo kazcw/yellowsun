@@ -8,9 +8,9 @@ mod cn_aesni;
 mod mmap;
 mod state;
 
-use blake::digest::Digest;
-use skein::digest::generic_array::typenum::U32;
-use skein::digest::generic_array::GenericArray;
+use blake_hash::digest::Digest;
+use skein_hash::digest::generic_array::typenum::U32;
+use skein_hash::digest::generic_array::GenericArray;
 use std::arch::x86_64::__m128i as i64x2;
 use std::str::FromStr;
 use byteorder::{ByteOrder, LE};
@@ -22,10 +22,10 @@ fn finalize(mut data: State) -> GenericArray<u8, U32> {
     keccak::f1600((&mut data).into());
     let bytes: &[u8; 200] = (&data).into();
     match bytes[0] & 3 {
-        0 => blake::Blake256::digest(bytes),
+        0 => blake_hash::Blake256::digest(bytes),
         1 => groestl_aesni::Groestl256::digest(bytes),
         2 => jh_x86_64::Jh256::digest(bytes),
-        3 => skein::Skein512::<U32>::digest(bytes),
+        3 => skein_hash::Skein512::<U32>::digest(bytes),
         _ => unreachable!(),
     }
 }
@@ -131,7 +131,7 @@ impl<Noncer, Variant: Default> CryptoNight<Noncer, Variant> {
 impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> Impl for CryptoNight<Noncer, Variant> {
     fn next_hash(&mut self, mem: &mut [i64x2], blob: &mut [u8]) -> GenericArray<u8, U32> {
         set_nonce(blob, self.n.next().unwrap());
-        let mut prev_state = std::mem::replace(&mut self.state, State::from(sha3::Keccak256Full::digest(blob)));
+        let mut prev_state = std::mem::replace(&mut self.state, State::from(sha3_plus::Keccak256Full::digest(blob)));
         let prev_var = std::mem::replace(&mut self.variant, Variant::new(blob, (&self.state).into()));
         cn_aesni::mix(mem, (&prev_state).into(), prev_var);
         cn_aesni::transplode((&mut prev_state).into(), mem, (&self.state).into());
@@ -141,7 +141,7 @@ impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> Impl for CryptoNi
 
 pub fn hash<V: cn_aesni::Variant>(blob: &[u8]) -> GenericArray<u8, U32> {
     let mut mem = Mmap::<[i64x2; 1 << 17]>::default();
-    let mut state = State::from(sha3::Keccak256Full::digest(blob));
+    let mut state = State::from(sha3_plus::Keccak256Full::digest(blob));
     let variant = V::new(blob, (&state).into());
     cn_aesni::explode(&mut mem[..], (&state).into());
     cn_aesni::mix(&mut mem[..], (&state).into(), variant);
