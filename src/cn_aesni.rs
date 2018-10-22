@@ -23,7 +23,7 @@ pub trait Variant: Default + Clone + Debug {
     fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i);
     fn pre_mul(&mut self, b0: u64) -> u64;
     fn int_math(&mut self, _c0: u64, _c1: u64);
-    unsafe fn post_mul(&mut self, mem: *mut u64, j: u32, lo: u64, hi: u64) -> (u64, u64);
+    unsafe fn post_mul(&mut self, mem: &mut [__m128i], j: u32, lo: u64, hi: u64) -> (u64, u64, __m128i);
     fn end_iter(&mut self, bb: __m128i);
     fn mem_size() -> u32;
 }
@@ -36,7 +36,7 @@ impl Variant for Cnv0 {
     fn shuffle_add(&mut self, _mem: &mut [__m128i], _j: u32, _bb: __m128i, _aa: __m128i) {}
     fn pre_mul(&mut self, b0: u64) -> u64 { b0 }
     fn int_math(&mut self, _c0: u64, _c1: u64) {}
-    unsafe fn post_mul(&mut self, _mem: *mut u64, _j: u32, lo: u64, hi: u64) -> (u64, u64) { (lo, hi) }
+    unsafe fn post_mul(&mut self, _mem: &mut [__m128i], _j: u32, lo: u64, hi: u64) -> (u64, u64, __m128i) { (lo, hi, _mm_set_epi64x(lo as i64, hi as i64)) }
     fn end_iter(&mut self, _bb: __m128i) {}
     fn mem_size() -> u32 { 0x20_0000 }
 }
@@ -121,13 +121,14 @@ impl Variant for Cnv2 {
         self.sqr = unsafe { int_sqrt_v2(c0.wrapping_add(self.div)) };
     }
     #[inline(always)]
-    unsafe fn post_mul(&mut self, mem: *mut u64, j: u32, mut lo: u64, mut hi: u64) -> (u64, u64) {
+    unsafe fn post_mul(&mut self, mem: &mut [__m128i], j: u32, mut lo: u64, mut hi: u64) -> (u64, u64, __m128i) {
         let j = j as usize;
-        *mem.add(j ^ 2) ^= hi;
-        *mem.add(j ^ 2).add(1) ^= lo;
-        hi ^= *mem.add(j ^ 4);
-        lo ^= *mem.add(j ^ 4).add(1);
-        (lo, hi)
+        let lohi1 = _mm_set_epi64x(lo as i64, hi as i64);
+        hi ^= *(mem.get_unchecked(j ^ 2) as *const _ as *const u64);
+        lo ^= *(mem.get_unchecked(j ^ 2) as *const _ as *const u64).add(1);
+        let lohi = _mm_xor_si128(lohi1, *mem.get_unchecked((j ^ 2) as usize));
+        *mem.get_unchecked_mut(j ^ 1) = _mm_xor_si128(lohi1, *mem.get_unchecked(j ^ 1));
+        (lo, hi, lohi)
     }
     #[inline(always)]
     fn end_iter(&mut self, bb: __m128i) {
@@ -137,12 +138,27 @@ impl Variant for Cnv2 {
     fn mem_size() -> u32 { 0x20_0000 }
 }
 
+macro_rules! iaca_start {
+    () => {
+    asm!("mov ebx, 111
+             .byte 0x64, 0x67, 0x90" :::: "intel", "volatile");
+    }
+}
+
+macro_rules! iaca_end {
+    () => {
+    asm!("mov ebx, 222
+             .byte 0x64, 0x67, 0x90" :::: "intel", "volatile");
+    }
+}
+
 #[target_feature(enable = "aes", enable = "sse4.1", enable = "sse4.2")]
 unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: V) {
     let mut aa = _mm_xor_si128(from[0], from[2]);
     let mut bb = _mm_xor_si128(from[1], from[3]);
     let mut a0 = _mm_extract_epi64(aa, 0) as u32;
     for _ in 0..ITERS {
+        iaca_start!();
         let j = (a0 & (V::mem_size() - 0x10)) >> 4;
         let cc = *mem.get_unchecked(j as usize);
         let cc = _mm_aesenc_si128(cc, aa);
@@ -155,16 +171,17 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
         let b1 = *(mem.get_unchecked(j as usize) as *const _ as *const u64).add(1);
         let b0 = var.pre_mul(b0);
         let (lo, hi) = mul64(c0, b0);
-        let (lo, hi) = var.post_mul(mem.as_mut_ptr() as *mut _, j << 1, lo, hi);
+        let (lo, hi, lohi) = var.post_mul(mem, j, lo, hi);
         var.shuffle_add(mem, j, bb, aa);
         a0 = a0.wrapping_add(hi as u32) ^ b0 as u32;
-        aa = _mm_add_epi64(aa, _mm_set_epi64x(lo as i64, hi as i64));
+        aa = _mm_add_epi64(aa, lohi);
         *mem.get_unchecked_mut(j as usize) = aa;
         var.end_iter(bb);
         aa = _mm_xor_si128(aa, _mm_set_epi64x(b1 as i64, b0 as i64));
         bb = cc;
         var.int_math(c0, c1);
     }
+    iaca_end!();
 }
 
 pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
