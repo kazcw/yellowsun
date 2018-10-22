@@ -21,7 +21,8 @@ fn mul64(x: u64, y: u64) -> (u64, u64) {
 pub trait Variant: Default + Clone + Debug {
     fn new(blob: &[u8], state: &[u64; 25]) -> Self;
     fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i);
-    fn pre_mul(&mut self, b0: u64, c0: u64, c1: u64) -> u64;
+    fn pre_mul(&mut self, b0: u64) -> u64;
+    fn int_math(&mut self, _c0: u64, _c1: u64);
     unsafe fn post_mul(&mut self, mem: *mut u64, j: u32, lo: u64, hi: u64) -> (u64, u64);
     fn end_iter(&mut self, bb: __m128i);
     fn mem_size() -> u32;
@@ -33,7 +34,8 @@ pub struct Cnv0;
 impl Variant for Cnv0 {
     fn new(_blob: &[u8], _state: &[u64; 25]) -> Self { Cnv0 }
     fn shuffle_add(&mut self, _mem: &mut [__m128i], _j: u32, _bb: __m128i, _aa: __m128i) {}
-    fn pre_mul(&mut self, b0: u64, _c0: u64, _c1: u64) -> u64 { b0 }
+    fn pre_mul(&mut self, b0: u64) -> u64 { b0 }
+    fn int_math(&mut self, _c0: u64, _c1: u64) {}
     unsafe fn post_mul(&mut self, _mem: *mut u64, _j: u32, lo: u64, hi: u64) -> (u64, u64) { (lo, hi) }
     fn end_iter(&mut self, _bb: __m128i) {}
     fn mem_size() -> u32 { 0x20_0000 }
@@ -108,13 +110,15 @@ impl Variant for Cnv2 {
         }
     }
     #[inline(always)]
-    fn pre_mul(&mut self, mut b0: u64, c0: u64, c1: u64) -> u64 {
-        b0 ^= self.div ^ (u64::from(self.sqr) << 32);
+    fn pre_mul(&mut self, b0: u64) -> u64 {
+        b0 ^ self.div ^ (u64::from(self.sqr) << 32)
+    }
+    #[inline(always)]
+    fn int_math(&mut self, c0: u64, c1: u64) {
         let dividend: u64 = c1;
         let divisor = ((c0 as u32).wrapping_add(self.sqr << 1)) | 0x8000_0001;
         self.div = u64::from((dividend / u64::from(divisor)) as u32) + ((dividend % u64::from(divisor)) << 32);
         self.sqr = unsafe { int_sqrt_v2(c0.wrapping_add(self.div)) };
-        b0
     }
     #[inline(always)]
     unsafe fn post_mul(&mut self, mem: *mut u64, j: u32, mut lo: u64, mut hi: u64) -> (u64, u64) {
@@ -149,7 +153,7 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
         let j = ((c0 as u32) & (V::mem_size() - 0x10)) >> 4;
         let b0 = *(mem.get_unchecked(j as usize) as *const _ as *const u64);
         let b1 = *(mem.get_unchecked(j as usize) as *const _ as *const u64).add(1);
-        let b0 = var.pre_mul(b0, c0, c1);
+        let b0 = var.pre_mul(b0);
         let (lo, hi) = mul64(c0, b0);
         let (lo, hi) = var.post_mul(mem.as_mut_ptr() as *mut _, j << 1, lo, hi);
         var.shuffle_add(mem, j, bb, aa);
@@ -159,6 +163,7 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
         var.end_iter(bb);
         aa = _mm_xor_si128(aa, _mm_set_epi64x(b1 as i64, b0 as i64));
         bb = cc;
+        var.int_math(c0, c1);
     }
 }
 
