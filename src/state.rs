@@ -2,8 +2,8 @@
 
 //! 200-byte buffer with 1/8/16-byte views.
 
-use skein::digest::generic_array::typenum::U200;
-use skein::GenericArray;
+use skein_hash::digest::generic_array::typenum::U200;
+use skein_hash::GenericArray;
 use std::arch::x86_64::__m128i as i64x2;
 
 #[derive(Clone, Copy)]
