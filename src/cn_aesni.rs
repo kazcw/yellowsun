@@ -180,9 +180,9 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
         let c0 = _mm_extract_epi64(cc, 0) as u64;
         let c1 = _mm_extract_epi64(cc, 1) as u64;
         let j = ((c0 as u32) & (V::mem_size() - 0x10)) >> 4;
+        var.reads(mem, j);
         let b0 = *(mem.get_unchecked(j as usize) as *const _ as *const u64);
         let b1 = *(mem.get_unchecked(j as usize) as *const _ as *const u64).add(1);
-        var.reads(mem, j);
         let b0 = var.pre_mul(b0);
         let (lo, hi) = mul64(c0, b0);
         let lohi = var.post_mul(lo, hi);
@@ -194,10 +194,6 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
         bb = cc;
         var.int_math(c0, c1);
     }
-}
-
-pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
-    unsafe { transplode_inner(into, mem, from); }
 }
 
 #[target_feature(enable = "aes")]
@@ -216,6 +212,9 @@ unsafe fn transplode_inner(into: &mut [__m128i], mem: &mut [__m128i], from: &[__
         }
         for (f, m) in from.iter().zip(m) { *m = *f; }
     }
+}
+pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
+    unsafe { transplode_inner(into, mem, from); }
 }
 
 macro_rules! round_term {
@@ -244,4 +243,34 @@ unsafe fn genkey(k0: __m128i, k1: __m128i) -> [__m128i; 10] {
     let k8 = update_key(k6, round_term!(0x08, 0xFF, k7));
     let k9 = update_key(k7, round_term!(0x00, 0xAA, k8));
     [k0, k1, k2, k3, k4, k5, k6, k7, k8, k9]
+}
+
+pub(crate) fn explode(mem: &mut [__m128i], from: &[__m128i]) {
+    unsafe { explode_inner(mem, from); }
+}
+#[target_feature(enable = "aes")]
+unsafe fn explode_inner(mem: &mut [__m128i], from: &[__m128i]) {
+    let key_from = genkey(from[0], from[1]);
+    let mut from = *(&from[4] as *const _ as *const [__m128i; 8]);
+    for m in mem.chunks_exact_mut(8) {
+        for k in key_from.iter() {
+            for f in from.iter_mut() { *f = _mm_aesenc_si128(*f, *k); }
+        }
+        for (f, m) in from.iter().zip(m) { *m = *f; }
+    }
+}
+
+pub(crate) fn implode(into: &mut [__m128i], mem: &[__m128i]) {
+    unsafe { implode_inner(into, mem); }
+}
+#[target_feature(enable = "aes")]
+unsafe fn implode_inner(into: &mut [__m128i], mem: &[__m128i]) {
+    let key_into = genkey(into[2], into[3]);
+    let into = &mut *(&mut into[4] as *mut _ as *mut [__m128i; 8]);
+    for m in mem.chunks_exact(8) {
+        for (i, m) in into.iter_mut().zip(m.iter()) { *i = _mm_xor_si128(*i, *m); }
+        for k in key_into.iter() {
+            for i in into.iter_mut() { *i = _mm_aesenc_si128(*i, *k); }
+        }
+    }
 }
