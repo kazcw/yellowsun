@@ -68,11 +68,10 @@ impl Hasher {
             Algo::Cn2 => Hasher_::CryptoNight2 { memory: Mmap::default() },
         })
     }
-    pub fn hashes<'a, Noncer: Iterator<Item = u32> + 'static>(&'a mut self, mut blob: Box<[u8]>, mut noncer: Noncer) -> Hashes<'a> {
-        set_nonce(&mut blob, noncer.next().unwrap());
+    pub fn hashes<'a, Noncer: Iterator<Item = u32> + 'static>(&'a mut self, mut blob: Box<[u8]>, noncer: Noncer) -> Hashes<'a> {
         match &mut self.0 {
             Hasher_::CryptoNight0 { memory } => {
-                let algo = CryptoNight::<_, cn_aesni::Cnv0>::new(noncer);
+                let algo = CryptoNight::<_, cn_aesni::Cnv0>::new(noncer, &mut memory[..], &mut blob[..]);
                 Hashes::new(&mut memory[..], blob, Box::new(algo))
             }
             /*
@@ -81,7 +80,7 @@ impl Hasher {
                 Hashes::new(&mut memory[..], blob, Box::new(algo))
             }*/
             Hasher_::CryptoNight2 { memory } => {
-                let algo = CryptoNight::<_, cn_aesni::Cnv2>::new(noncer);
+                let algo = CryptoNight::<_, cn_aesni::Cnv2>::new(noncer, &mut memory[..], &mut blob[..]);
                 Hashes::new(&mut memory[..], blob, Box::new(algo))
             }
         }
@@ -119,13 +118,13 @@ pub struct CryptoNight<Noncer, Variant> {
     variant: Variant,
     n: Noncer,
 }
-impl<Noncer, Variant: Default> CryptoNight<Noncer, Variant> {
-    fn new(n: Noncer) -> Self {
-        CryptoNight {
-            state: State::default(),
-            variant: Variant::default(),
-            n,
-        }
+impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> CryptoNight<Noncer, Variant> {
+    fn new(mut n: Noncer, mem: &mut [i64x2], blob: &mut [u8]) -> Self {
+        set_nonce(blob, n.next().unwrap());
+        let state = State::from(sha3_plus::Keccak256Full::digest(blob));
+        let variant = Variant::new(blob, (&state).into());
+        cn_aesni::explode(mem, (&state).into());
+        CryptoNight { state, variant, n }
     }
 }
 impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> Impl for CryptoNight<Noncer, Variant> {
