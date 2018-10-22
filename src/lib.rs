@@ -31,8 +31,7 @@ fn finalize(mut data: State) -> GenericArray<u8, U32> {
 }
 
 fn set_nonce(blob: &mut [u8], nonce: u32) {
-    // XXX XXX XXX
-    //LE::write_u32(&mut blob[39..43], nonce);
+    LE::write_u32(&mut blob[39..43], nonce);
 }
 
 #[derive(Debug)]
@@ -69,10 +68,11 @@ impl Hasher {
             Algo::Cn2 => Hasher_::CryptoNight2 { memory: Mmap::default() },
         })
     }
-    pub fn hashes<'a, Noncer: Iterator<Item = u32> + 'static>(&'a mut self, mut blob: Box<[u8]>, noncer: Noncer) -> Hashes<'a> {
+    pub fn hashes<'a, Noncer: Iterator<Item = u32> + 'static>(&'a mut self, mut blob: Box<[u8]>, mut noncer: Noncer) -> Hashes<'a> {
+        set_nonce(&mut blob, noncer.next().unwrap());
         match &mut self.0 {
             Hasher_::CryptoNight0 { memory } => {
-                let algo = CryptoNight::<_, cn_aesni::Cnv0>::new(&mut memory[..], noncer, &mut blob);
+                let algo = CryptoNightHasher { cn: CryptoNight::<cn_aesni::Cnv0>::default(), n: noncer };
                 Hashes::new(&mut memory[..], blob, Box::new(algo))
             }
             /*
@@ -81,7 +81,7 @@ impl Hasher {
                 Hashes::new(&mut memory[..], blob, Box::new(algo))
             }*/
             Hasher_::CryptoNight2 { memory } => {
-                let algo = CryptoNight::<_, cn_aesni::Cnv2>::new(&mut memory[..], noncer, &mut blob);
+                let algo = CryptoNightHasher { cn: CryptoNight::<cn_aesni::Cnv2>::default(), n: noncer };
                 Hashes::new(&mut memory[..], blob, Box::new(algo))
             }
         }
@@ -114,25 +114,14 @@ trait Impl {
 }
 
 #[derive(Default)]
-pub struct CryptoNight<Noncer, Variant> {
-    noncer: Noncer,
+pub struct CryptoNight<Variant> {
     state: (State, State),
     variant: Variant,
 }
-impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> CryptoNight<Noncer, Variant> {
-    pub fn new(memory: &mut [i64x2], noncer: Noncer, blob: &mut [u8]) -> Self {
-        let mut res = Self {
-            state: Default::default(),
-            variant: Default::default(),
-            noncer,
-        };
-        res.transplode(memory, blob);
-        res
-    }
-    fn transplode(&mut self, memory: &mut [i64x2], blob: &mut [u8]) -> GenericArray<u8, U32> {
-        set_nonce(blob, self.noncer.next().unwrap());
+impl<Variant: cn_aesni::Variant> CryptoNight<Variant> {
+    fn transplode(&mut self, memory: &mut [i64x2], blob: &[u8]) -> GenericArray<u8, U32> {
         self.state.1 = State::from(sha3::Keccak256Full::digest(blob));
-        self.variant = cn_aesni::Variant::new(&blob, (&self.state.1).into());
+        self.variant = cn_aesni::Variant::new(blob, (&self.state.1).into());
         cn_aesni::transplode(
             (&mut self.state.0).into(),
             &mut memory[..],
@@ -142,12 +131,29 @@ impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> CryptoNight<Nonce
         self.state.0 = self.state.1;
         result
     }
-}
-impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> Impl for CryptoNight<Noncer, Variant> {
-    fn next_hash(&mut self, memory: &mut [i64x2], blob: &mut [u8]) -> GenericArray<u8, U32> {
-        cn_aesni::mix(memory, (&self.state.0).into(), self.variant.clone());
-        self.transplode(memory, blob)
+    fn mix(&self, mem: &mut [i64x2]) {
+        cn_aesni::mix(mem, (&self.state.0).into(), self.variant.clone());
     }
+}
+#[derive(Default)]
+pub struct CryptoNightHasher<Noncer, Variant> {
+    cn: CryptoNight<Variant>,
+    n: Noncer,
+}
+impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> Impl for CryptoNightHasher<Noncer, Variant> {
+    fn next_hash(&mut self, memory: &mut [i64x2], blob: &mut [u8]) -> GenericArray<u8, U32> {
+        self.cn.mix(memory);
+        set_nonce(blob, self.n.next().unwrap());
+        self.cn.transplode(memory, blob)
+    }
+}
+
+pub fn hash<V: cn_aesni::Variant>(blob: &[u8]) -> GenericArray<u8, U32> {
+    let mut mem = Mmap::<[i64x2; 1 << 17]>::default();
+    let mut hasher = CryptoNight::<V>::default();
+    hasher.transplode(&mut mem[..], blob);
+    cn_aesni::mix(&mut mem[..], (&hasher.state.0).into(), hasher.variant.clone());
+    hasher.transplode(&mut mem[..], &[])
 }
 
 #[cfg(test)]
@@ -156,13 +162,10 @@ mod tests {
 
     use hex_literal::{hex, hex_impl};
 
-    fn test_independent_cases(hasher: &mut Hasher, input: &[&[u8]], output: &[[u8; 32]]) {
+    fn test_independent_cases<V: cn_aesni::Variant>(input: &[&[u8]], output: &[[u8; 32]]) {
         assert_eq!(input.len(), output.len());
         for (&blob, &expected) in input.iter().zip(output) {
-            //let nonce = LE::read_u32(&blob[39..43]);
-            let nonce = 0;
-            let mut hashes = hasher.hashes(blob.to_owned().into_boxed_slice(), nonce..);
-            assert_eq!(hashes.next().unwrap(), expected);
+            assert_eq!(&hash::<V>(blob)[..], expected);
         }
     }
 
@@ -181,7 +184,7 @@ mod tests {
             hex!("bbec2cacf69866a8e740380fe7b818fc78f8571221742d729d9d02d7f8989b87"),
             hex!("b1257de4efc5ce28c6b40ceb1c6c8f812a64634eb3e81c5220bee9b2b76a6f05"),
         ];
-        test_independent_cases(&mut Hasher::new(Algo::Cn0), IN_V0, OUT_V0);
+        test_independent_cases::<cn_aesni::Cnv0>(IN_V0, OUT_V0);
     }
 
     /*
@@ -233,6 +236,6 @@ mod tests {
             hex!("12a794c1aa13d561c9c6111cee631ca9d0a321718d67d3416add9de1693ba41e"),
             hex!("2659ff95fc74b6215c1dc741e85b7a9710101b30620212f80eb59c3c55993f9d"),
         ];
-        test_independent_cases(&mut Hasher::new(Algo::Cn2), IN_V2, OUT_V2);
+        test_independent_cases::<cn_aesni::Cnv2>(IN_V2, OUT_V2);
     }
 }
