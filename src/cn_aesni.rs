@@ -20,12 +20,13 @@ fn mul64(x: u64, y: u64) -> (u64, u64) {
 
 pub trait Variant: Default + Clone + Debug {
     fn new(blob: &[u8], state: &[u64; 25]) -> Self;
-    fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i);
     fn pre_mul(&mut self, b0: u64) -> u64;
     fn int_math(&mut self, _c0: u64, _c1: u64);
-    unsafe fn post_mul(&mut self, mem: &mut [__m128i], j: u32, lo: u64, hi: u64, j1: __m128i) -> __m128i;
+    unsafe fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i;
     fn end_iter(&mut self, bb: __m128i);
     fn mem_size() -> u32;
+    fn reads(&mut self, mem: &[__m128i], j: u32);
+    fn writes(&self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i);
 }
 
 #[derive(Default, Clone, Debug)]
@@ -33,12 +34,13 @@ pub struct Cnv0;
 
 impl Variant for Cnv0 {
     fn new(_blob: &[u8], _state: &[u64; 25]) -> Self { Cnv0 }
-    fn shuffle_add(&mut self, _mem: &mut [__m128i], _j: u32, _bb: __m128i, _aa: __m128i) {}
     fn pre_mul(&mut self, b0: u64) -> u64 { b0 }
     fn int_math(&mut self, _c0: u64, _c1: u64) {}
-    unsafe fn post_mul(&mut self, _mem: &mut [__m128i], _j: u32, lo: u64, hi: u64, _j1: __m128i) -> __m128i { _mm_set_epi64x(lo as i64, hi as i64) }
+    unsafe fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i { _mm_set_epi64x(lo as i64, hi as i64) }
     fn end_iter(&mut self, _bb: __m128i) {}
     fn mem_size() -> u32 { 0x20_0000 }
+    fn reads(&mut self, _mem: &[__m128i], _j: u32) {}
+    fn writes(&self, _mem: &mut [__m128i], _j: u32, _bb: __m128i, _aa: __m128i) {}
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +48,9 @@ pub struct Cnv2 {
     bb1: __m128i,
     div: u64,
     sqr: u32,
+    j1: __m128i,
+    j2: __m128i,
+    j3: __m128i,
 }
 
 impl Default for Cnv2 {
@@ -54,6 +59,9 @@ impl Default for Cnv2 {
             bb1: unsafe { _mm_set_epi64x(0, 0) },
             div: 0,
             sqr: 0,
+            j1: unsafe { _mm_set_epi64x(0, 0) },
+            j2: unsafe { _mm_set_epi64x(0, 0) },
+            j3: unsafe { _mm_set_epi64x(0, 0) },
         }
    }
 }
@@ -94,20 +102,12 @@ impl Variant for Cnv2 {
         let b2 = state[8] ^ state[10];
         let b3 = state[9] ^ state[11];
         let bb1 = unsafe { _mm_set_epi64x(b3 as i64, b2 as i64) };
+        let j1 = unsafe { _mm_set_epi64x(0, 0) };
+        let j2 = unsafe { _mm_set_epi64x(0, 0) };
+        let j3 = unsafe { _mm_set_epi64x(0, 0) };
         let div = state[12];
         let sqr = state[13] as u32;
-        Cnv2 { bb1, div, sqr }
-    }
-    #[inline(always)]
-    fn shuffle_add(&mut self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i) {
-        unsafe {
-            let c1 = *mem.get_unchecked((j ^ 1) as usize);
-            let c2 = *mem.get_unchecked((j ^ 2) as usize);
-            let c3 = *mem.get_unchecked((j ^ 3) as usize);
-            *mem.get_unchecked_mut((j ^ 1) as usize) = _mm_add_epi64(c3, self.bb1);
-            *mem.get_unchecked_mut((j ^ 2) as usize) = _mm_add_epi64(c1, bb);
-            *mem.get_unchecked_mut((j ^ 3) as usize) = _mm_add_epi64(c2, aa);
-        }
+        Cnv2 { bb1, div, sqr, j1, j2, j3 }
     }
     #[inline(always)]
     fn pre_mul(&mut self, b0: u64) -> u64 {
@@ -121,11 +121,26 @@ impl Variant for Cnv2 {
         self.sqr = unsafe { int_sqrt_v2(c0.wrapping_add(self.div)) };
     }
     #[inline(always)]
-    unsafe fn post_mul(&mut self, mem: &mut [__m128i], j: u32, lo: u64, hi: u64, j1: __m128i) -> __m128i {
-        let lohi1 = _mm_set_epi64x(lo as i64, hi as i64);
-        let lohi = _mm_xor_si128(lohi1, *mem.get_unchecked((j ^ 2) as usize));
-        *mem.get_unchecked_mut((j ^ 1) as usize) = _mm_xor_si128(lohi1, j1);
-        lohi
+    fn reads(&mut self, mem: &[__m128i], j: u32) {
+        unsafe {
+            self.j1 = *mem.get_unchecked((j ^ 1) as usize);
+            self.j2 = *mem.get_unchecked((j ^ 2) as usize);
+            self.j3 = *mem.get_unchecked((j ^ 3) as usize);
+        }
+    }
+    #[inline(always)]
+    fn writes(&self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i) {
+        unsafe {
+            *mem.get_unchecked_mut((j ^ 1) as usize) = _mm_add_epi64(self.j3, self.bb1);
+            *mem.get_unchecked_mut((j ^ 2) as usize) = _mm_add_epi64(self.j1, bb);
+            *mem.get_unchecked_mut((j ^ 3) as usize) = _mm_add_epi64(self.j2, aa);
+        }
+    }
+    #[inline(always)]
+    unsafe fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i {
+        let lohi = _mm_set_epi64x(lo as i64, hi as i64);
+        self.j1 = _mm_xor_si128(lohi, self.j1);
+        _mm_xor_si128(lohi, self.j2)
     }
     #[inline(always)]
     fn end_iter(&mut self, bb: __m128i) {
@@ -158,20 +173,20 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
     let mut a0 = _mm_extract_epi64(aa, 0) as u32;
     for _ in 0..ITERS {
         let j = (a0 & (V::mem_size() - 0x10)) >> 4;
-        let cc = *mem.get_unchecked(j as usize);
-        let cc = _mm_aesenc_si128(cc, aa);
-        var.shuffle_add(mem, j, bb, aa);
+        let cc = _mm_aesenc_si128(*mem.get_unchecked(j as usize), aa);
+        var.reads(mem, j);
+        var.writes(mem, j, bb, aa);
         *mem.get_unchecked_mut(j as usize) = _mm_xor_si128(bb, cc);
         let c0 = _mm_extract_epi64(cc, 0) as u64;
         let c1 = _mm_extract_epi64(cc, 1) as u64;
         let j = ((c0 as u32) & (V::mem_size() - 0x10)) >> 4;
         let b0 = *(mem.get_unchecked(j as usize) as *const _ as *const u64);
         let b1 = *(mem.get_unchecked(j as usize) as *const _ as *const u64).add(1);
-        let j1 = *mem.get_unchecked((j ^ 1) as usize);
+        var.reads(mem, j);
         let b0 = var.pre_mul(b0);
         let (lo, hi) = mul64(c0, b0);
-        let lohi = var.post_mul(mem, j, lo, hi, j1);
-        var.shuffle_add(mem, j, bb, aa);
+        let lohi = var.post_mul(lo, hi);
+        var.writes(mem, j, bb, aa);
         aa = _mm_add_epi64(aa, lohi);
         *mem.get_unchecked_mut(j as usize) = aa;
         var.end_iter(bb);
