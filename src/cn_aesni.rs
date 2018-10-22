@@ -170,8 +170,8 @@ macro_rules! iaca_end {
 unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: V) {
     let mut aa = _mm_xor_si128(from[0], from[2]);
     let mut bb = _mm_xor_si128(from[1], from[3]);
-    let mut a0 = _mm_extract_epi64(aa, 0) as u32;
     for _ in 0..ITERS {
+        let a0 = _mm_extract_epi32(aa, 0) as u32;
         let j = (a0 & (V::mem_size() - 0x10)) >> 4;
         let cc = _mm_aesenc_si128(*mem.get_unchecked(j as usize), aa);
         var.reads(mem, j);
@@ -191,7 +191,6 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
         *mem.get_unchecked_mut(j as usize) = aa;
         var.end_iter(bb);
         aa = _mm_xor_si128(aa, _mm_set_epi64x(b1 as i64, b0 as i64));
-        a0 = _mm_extract_epi32(aa, 0) as u32;
         bb = cc;
         var.int_math(c0, c1);
     }
