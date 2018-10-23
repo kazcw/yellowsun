@@ -3,12 +3,6 @@
 use std::arch::x86_64::*;
 use std::fmt::Debug;
 
-pub fn mix<V: Variant>(memory: &mut [__m128i], from: &[__m128i], variant: V) {
-    unsafe {
-        mix_inner(memory, from, variant);
-    }
-}
-
 const ITERS: u32 = 0x80000;
 
 #[inline(always)]
@@ -22,11 +16,11 @@ pub trait Variant: Default + Clone + Debug {
     fn new(blob: &[u8], state: &[u64; 25]) -> Self;
     fn pre_mul(&mut self, b0: u64) -> u64;
     fn int_math(&mut self, _c0: u64, _c1: u64);
-    unsafe fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i;
+    fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i;
     fn end_iter(&mut self, bb: __m128i);
     fn mem_size() -> u32;
-    fn reads(&mut self, mem: &[__m128i], j: u32);
-    fn writes(&self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i);
+    unsafe fn reads(&mut self, mem: &[__m128i], j: u32);
+    unsafe fn writes(&self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i);
 }
 
 #[derive(Default, Clone, Debug)]
@@ -36,11 +30,11 @@ impl Variant for Cnv0 {
     fn new(_blob: &[u8], _state: &[u64; 25]) -> Self { Cnv0 }
     fn pre_mul(&mut self, b0: u64) -> u64 { b0 }
     fn int_math(&mut self, _c0: u64, _c1: u64) {}
-    unsafe fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i { _mm_set_epi64x(lo as i64, hi as i64) }
+    fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i { unsafe { _mm_set_epi64x(lo as i64, hi as i64) } }
     fn end_iter(&mut self, _bb: __m128i) {}
     fn mem_size() -> u32 { 0x20_0000 }
-    fn reads(&mut self, _mem: &[__m128i], _j: u32) {}
-    fn writes(&self, _mem: &mut [__m128i], _j: u32, _bb: __m128i, _aa: __m128i) {}
+    unsafe fn reads(&mut self, _mem: &[__m128i], _j: u32) {}
+    unsafe fn writes(&self, _mem: &mut [__m128i], _j: u32, _bb: __m128i, _aa: __m128i) {}
 }
 
 #[derive(Clone, Debug)]
@@ -121,26 +115,24 @@ impl Variant for Cnv2 {
         self.sqr = unsafe { int_sqrt_v2(c0.wrapping_add(self.div)) };
     }
     #[inline(always)]
-    fn reads(&mut self, mem: &[__m128i], j: u32) {
-        unsafe {
-            self.j1 = *mem.get_unchecked((j ^ 1) as usize);
-            self.j2 = *mem.get_unchecked((j ^ 2) as usize);
-            self.j3 = *mem.get_unchecked((j ^ 3) as usize);
-        }
+    unsafe fn reads(&mut self, mem: &[__m128i], j: u32) {
+        self.j1 = *mem.get_unchecked((j ^ 1) as usize);
+        self.j2 = *mem.get_unchecked((j ^ 2) as usize);
+        self.j3 = *mem.get_unchecked((j ^ 3) as usize);
     }
     #[inline(always)]
-    fn writes(&self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i) {
-        unsafe {
-            *mem.get_unchecked_mut((j ^ 1) as usize) = _mm_add_epi64(self.j3, self.bb1);
-            *mem.get_unchecked_mut((j ^ 2) as usize) = _mm_add_epi64(self.j1, bb);
-            *mem.get_unchecked_mut((j ^ 3) as usize) = _mm_add_epi64(self.j2, aa);
-        }
+    unsafe fn writes(&self, mem: &mut [__m128i], j: u32, bb: __m128i, aa: __m128i) {
+        *mem.get_unchecked_mut((j ^ 1) as usize) = _mm_add_epi64(self.j3, self.bb1);
+        *mem.get_unchecked_mut((j ^ 2) as usize) = _mm_add_epi64(self.j1, bb);
+        *mem.get_unchecked_mut((j ^ 3) as usize) = _mm_add_epi64(self.j2, aa);
     }
     #[inline(always)]
-    unsafe fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i {
-        let lohi = _mm_set_epi64x(lo as i64, hi as i64);
-        self.j1 = _mm_xor_si128(lohi, self.j1);
-        _mm_xor_si128(lohi, self.j2)
+    fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i {
+        unsafe {
+            let lohi = _mm_set_epi64x(lo as i64, hi as i64);
+            self.j1 = _mm_xor_si128(lohi, self.j1);
+            _mm_xor_si128(lohi, self.j2)
+        }
     }
     #[inline(always)]
     fn end_iter(&mut self, bb: __m128i) {
@@ -165,6 +157,14 @@ macro_rules! iaca_end {
     }
 }
 */
+
+#[inline(always)]
+pub(crate) fn mix<V: Variant>(mem: &mut [__m128i], from: &[__m128i], var: V) {
+    unsafe {
+        assert_eq!(V::mem_size() as usize, mem.len().checked_mul(std::mem::size_of::<__m128i>()).unwrap());
+        mix_inner(mem, from, var)
+    }
+}
 
 #[target_feature(enable = "aes", enable = "sse4.1", enable = "sse4.2")]
 unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: V) {
@@ -196,6 +196,15 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
     }
 }
 
+#[inline(always)]
+pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
+    unsafe {
+        assert!(into.len() >= 8);
+        assert!(from.len() >= 8);
+        transplode_inner(into, mem, from)
+    }
+}
+
 #[target_feature(enable = "aes")]
 unsafe fn transplode_inner(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
     let key_into = genkey(into[2], into[3]);
@@ -212,9 +221,6 @@ unsafe fn transplode_inner(into: &mut [__m128i], mem: &mut [__m128i], from: &[__
         }
         for (f, m) in from.iter().zip(m) { *m = *f; }
     }
-}
-pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
-    unsafe { transplode_inner(into, mem, from); }
 }
 
 macro_rules! round_term {
@@ -245,9 +251,14 @@ unsafe fn genkey(k0: __m128i, k1: __m128i) -> [__m128i; 10] {
     [k0, k1, k2, k3, k4, k5, k6, k7, k8, k9]
 }
 
+#[inline(always)]
 pub(crate) fn explode(mem: &mut [__m128i], from: &[__m128i]) {
-    unsafe { explode_inner(mem, from); }
+    unsafe {
+        assert!(from.len() >= 8);
+        explode_inner(mem, from)
+    }
 }
+
 #[target_feature(enable = "aes")]
 unsafe fn explode_inner(mem: &mut [__m128i], from: &[__m128i]) {
     let key_from = genkey(from[0], from[1]);
@@ -260,9 +271,14 @@ unsafe fn explode_inner(mem: &mut [__m128i], from: &[__m128i]) {
     }
 }
 
+#[inline(always)]
 pub(crate) fn implode(into: &mut [__m128i], mem: &[__m128i]) {
-    unsafe { implode_inner(into, mem); }
+    unsafe {
+        assert!(into.len() >= 8);
+        implode_inner(into, mem);
+    }
 }
+
 #[target_feature(enable = "aes")]
 unsafe fn implode_inner(into: &mut [__m128i], mem: &[__m128i]) {
     let key_into = genkey(into[2], into[3]);

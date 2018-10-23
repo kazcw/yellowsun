@@ -113,7 +113,7 @@ trait Impl {
 }
 
 #[derive(Default)]
-pub struct CryptoNight<Noncer, Variant> {
+struct CryptoNight<Noncer, Variant> {
     state: State,
     variant: Variant,
     n: Noncer,
