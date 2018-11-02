@@ -53,6 +53,8 @@ impl FromStr for Algo {
     }
 }
 
+pub use crate::mmap::Policy as AllocPolicy;
+
 pub struct Hasher(Hasher_);
 enum Hasher_ {
     CryptoNight0{ memory: Mmap<[i64x2; 1 << 17]> },
@@ -60,11 +62,11 @@ enum Hasher_ {
     CryptoNight2{ memory: Mmap<[i64x2; 1 << 17]> },
 }
 impl Hasher {
-    pub fn new(algo: Algo) -> Self {
+    pub fn new(algo: Algo, alloc: AllocPolicy) -> Self {
         Hasher(match algo {
-            Algo::Cn0 => Hasher_::CryptoNight0 { memory: Mmap::default() },
+            Algo::Cn0 => Hasher_::CryptoNight0 { memory: Mmap::new(alloc) },
             //Algo::Cn1 => Hasher_::CryptoNight1 { memory: Mmap::default() },
-            Algo::Cn2 => Hasher_::CryptoNight2 { memory: Mmap::default() },
+            Algo::Cn2 => Hasher_::CryptoNight2 { memory: Mmap::new(alloc) },
         })
     }
     pub fn hashes<'a, Noncer: Iterator<Item = u32> + 'static>(&'a mut self, mut blob: Box<[u8]>, noncer: Noncer) -> Hashes<'a> {
