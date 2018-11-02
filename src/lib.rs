@@ -1,7 +1,6 @@
 // copyright 2017 Kaz Wesley
 
 #![feature(asm)]
-#![feature(chunks_exact)]
 #![feature(stdsimd)]
 
 mod cn_aesni;
