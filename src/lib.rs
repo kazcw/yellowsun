@@ -237,7 +237,7 @@ mod tests {
         let blob0 = [0u8; 64];
         let pip_blob: Vec<_> = blob0.iter().cloned().collect();
         let pip_blob = pip_blob.into_boxed_slice();
-        let mut hasher = Hasher::new(Algo::Cn2);
+        let mut hasher = Hasher::new(Algo::Cn2, AllocPolicy::AllowSlow);
         let mut pipeline = hasher.hashes(pip_blob, 0..);
         let mut blob1 = blob0;
         set_nonce(&mut blob1, 1);
