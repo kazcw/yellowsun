@@ -1,7 +1,7 @@
 #![feature(test)]
 extern crate test;
 
-use yellowsun::{Hasher, Algo};
+use yellowsun::{Algo, Hasher};
 
 /*
 #[bench]

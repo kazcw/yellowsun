@@ -27,12 +27,20 @@ pub trait Variant: Default + Clone + Debug {
 pub struct Cnv0;
 
 impl Variant for Cnv0 {
-    fn new(_blob: &[u8], _state: &[u64; 25]) -> Self { Cnv0 }
-    fn pre_mul(&mut self, b0: u64) -> u64 { b0 }
+    fn new(_blob: &[u8], _state: &[u64; 25]) -> Self {
+        Cnv0
+    }
+    fn pre_mul(&mut self, b0: u64) -> u64 {
+        b0
+    }
     fn int_math(&mut self, _c0: u64, _c1: u64) {}
-    fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i { unsafe { _mm_set_epi64x(lo as i64, hi as i64) } }
+    fn post_mul(&mut self, lo: u64, hi: u64) -> __m128i {
+        unsafe { _mm_set_epi64x(lo as i64, hi as i64) }
+    }
     fn end_iter(&mut self, _bb: __m128i) {}
-    fn mem_size() -> u32 { 0x20_0000 }
+    fn mem_size() -> u32 {
+        0x20_0000
+    }
     unsafe fn reads(&mut self, _mem: &[__m128i], _j: u32) {}
     unsafe fn writes(&self, _mem: &mut [__m128i], _j: u32, _bb: __m128i, _aa: __m128i) {}
 }
@@ -57,14 +65,17 @@ impl Default for Cnv2 {
             j2: unsafe { _mm_set_epi64x(0, 0) },
             j3: unsafe { _mm_set_epi64x(0, 0) },
         }
-   }
+    }
 }
 
 #[inline(always)]
 unsafe fn int_sqrt_v2(input: u64) -> u32 {
     let r = {
         let exp_double_bias = _mm_set_epi64x(0, (1023u64 << 52) as i64);
-        let x = std::mem::transmute(_mm_add_epi64(_mm_cvtsi64_si128((input >> 12) as i64), exp_double_bias));
+        let x = std::mem::transmute(_mm_add_epi64(
+            _mm_cvtsi64_si128((input >> 12) as i64),
+            exp_double_bias,
+        ));
         let x = _mm_sqrt_sd(_mm_setzero_pd(), x);
         (_mm_cvtsi128_si64(_mm_sub_epi64(std::mem::transmute(x), exp_double_bias)) as u64) >> 19
     };
@@ -72,7 +83,9 @@ unsafe fn int_sqrt_v2(input: u64) -> u32 {
     let s = r >> 1;
     let b = r & 1;
     let r2 = s.wrapping_mul(s + b).wrapping_add(r << 32);
-    (r as u32).wrapping_add((r2.wrapping_add(1 << 32) < input.wrapping_sub(s)) as u32).wrapping_sub((r2.wrapping_add(b) > input) as u32)
+    (r as u32)
+        .wrapping_add((r2.wrapping_add(1 << 32) < input.wrapping_sub(s)) as u32)
+        .wrapping_sub((r2.wrapping_add(b) > input) as u32)
 }
 
 #[cfg(test)]
@@ -101,7 +114,14 @@ impl Variant for Cnv2 {
         let j3 = unsafe { _mm_set_epi64x(0, 0) };
         let div = state[12];
         let sqr = state[13] as u32;
-        Cnv2 { bb1, div, sqr, j1, j2, j3 }
+        Cnv2 {
+            bb1,
+            div,
+            sqr,
+            j1,
+            j2,
+            j3,
+        }
     }
     #[inline(always)]
     fn pre_mul(&mut self, b0: u64) -> u64 {
@@ -111,7 +131,8 @@ impl Variant for Cnv2 {
     fn int_math(&mut self, c0: u64, c1: u64) {
         let dividend: u64 = c1;
         let divisor = ((c0 as u32).wrapping_add(self.sqr << 1)) | 0x8000_0001;
-        self.div = u64::from((dividend / u64::from(divisor)) as u32) + ((dividend % u64::from(divisor)) << 32);
+        self.div = u64::from((dividend / u64::from(divisor)) as u32)
+            + ((dividend % u64::from(divisor)) << 32);
         self.sqr = unsafe { int_sqrt_v2(c0.wrapping_add(self.div)) };
     }
     #[inline(always)]
@@ -139,7 +160,9 @@ impl Variant for Cnv2 {
         self.bb1 = bb;
     }
     #[inline(always)]
-    fn mem_size() -> u32 { 0x20_0000 }
+    fn mem_size() -> u32 {
+        0x20_0000
+    }
 }
 
 /*
@@ -161,7 +184,12 @@ macro_rules! iaca_end {
 #[inline(always)]
 pub(crate) fn mix<V: Variant>(mem: &mut [__m128i], from: &[__m128i], var: V) {
     unsafe {
-        assert_eq!(V::mem_size() as usize, mem.len().checked_mul(std::mem::size_of::<__m128i>()).unwrap());
+        assert_eq!(
+            V::mem_size() as usize,
+            mem.len()
+                .checked_mul(std::mem::size_of::<__m128i>())
+                .unwrap()
+        );
         mix_inner(mem, from, var)
     }
 }
@@ -212,14 +240,22 @@ unsafe fn transplode_inner(into: &mut [__m128i], mem: &mut [__m128i], from: &[__
     let into = &mut *(&mut into[4] as *mut _ as *mut [__m128i; 8]);
     let mut from = *(&from[4] as *const _ as *const [__m128i; 8]);
     for m in mem.chunks_exact_mut(8) {
-        for (i, m) in into.iter_mut().zip(m.iter()) { *i = _mm_xor_si128(*i, *m); }
+        for (i, m) in into.iter_mut().zip(m.iter()) {
+            *i = _mm_xor_si128(*i, *m);
+        }
         for k in key_into.iter() {
-            for i in into.iter_mut() { *i = _mm_aesenc_si128(*i, *k); }
+            for i in into.iter_mut() {
+                *i = _mm_aesenc_si128(*i, *k);
+            }
         }
         for k in key_from.iter() {
-            for f in from.iter_mut() { *f = _mm_aesenc_si128(*f, *k); }
+            for f in from.iter_mut() {
+                *f = _mm_aesenc_si128(*f, *k);
+            }
         }
-        for (f, m) in from.iter().zip(m) { *m = *f; }
+        for (f, m) in from.iter().zip(m) {
+            *m = *f;
+        }
     }
 }
 
@@ -265,9 +301,13 @@ unsafe fn explode_inner(mem: &mut [__m128i], from: &[__m128i]) {
     let mut from = *(&from[4] as *const _ as *const [__m128i; 8]);
     for m in mem.chunks_exact_mut(8) {
         for k in key_from.iter() {
-            for f in from.iter_mut() { *f = _mm_aesenc_si128(*f, *k); }
+            for f in from.iter_mut() {
+                *f = _mm_aesenc_si128(*f, *k);
+            }
         }
-        for (f, m) in from.iter().zip(m) { *m = *f; }
+        for (f, m) in from.iter().zip(m) {
+            *m = *f;
+        }
     }
 }
 
@@ -284,9 +324,13 @@ unsafe fn implode_inner(into: &mut [__m128i], mem: &[__m128i]) {
     let key_into = genkey(into[2], into[3]);
     let into = &mut *(&mut into[4] as *mut _ as *mut [__m128i; 8]);
     for m in mem.chunks_exact(8) {
-        for (i, m) in into.iter_mut().zip(m.iter()) { *i = _mm_xor_si128(*i, *m); }
+        for (i, m) in into.iter_mut().zip(m.iter()) {
+            *i = _mm_xor_si128(*i, *m);
+        }
         for k in key_into.iter() {
-            for i in into.iter_mut() { *i = _mm_aesenc_si128(*i, *k); }
+            for i in into.iter_mut() {
+                *i = _mm_aesenc_si128(*i, *k);
+            }
         }
     }
 }
