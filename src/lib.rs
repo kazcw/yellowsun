@@ -14,8 +14,8 @@ use skein_hash::digest::generic_array::GenericArray;
 use std::arch::x86_64::__m128i as i64x2;
 use std::str::FromStr;
 
-use self::mmap::Mmap;
-use self::state::State;
+use mmap::Mmap;
+use state::State;
 
 fn finalize(mut data: State) -> GenericArray<u8, U32> {
     keccak::f1600((&mut data).into());
