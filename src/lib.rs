@@ -8,7 +8,6 @@ mod mmap;
 mod state;
 
 use blake_hash::digest::Digest;
-use byteorder::{ByteOrder, LE};
 use skein_hash::digest::generic_array::typenum::U32;
 use skein_hash::digest::generic_array::GenericArray;
 use std::arch::x86_64::__m128i as i64x2;
@@ -30,7 +29,7 @@ fn finalize(mut data: State) -> GenericArray<u8, U32> {
 }
 
 fn set_nonce(blob: &mut [u8], nonce: u32) {
-    LE::write_u32(&mut blob[39..43], nonce);
+    blob[39..43].copy_from_slice(&nonce.to_le_bytes());
 }
 
 #[derive(Debug)]
