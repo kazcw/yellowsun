@@ -135,7 +135,7 @@ struct CryptoNight<Noncer, Variant> {
 impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> CryptoNight<Noncer, Variant> {
     fn new(mut n: Noncer, mem: &mut [i64x2], blob: &mut [u8]) -> Self {
         set_nonce(blob, n.next().unwrap());
-        let state = State::from(sha3_plus::Keccak256Full::digest(blob));
+        let state = State::from(sha3::Keccak256Full::digest(blob));
         let variant = Variant::new(blob, (&state).into());
         cn_aesni::explode(mem, (&state).into());
         CryptoNight { state, variant, n }
@@ -148,7 +148,7 @@ impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> Impl
         set_nonce(blob, self.n.next().unwrap());
         let mut prev_state = std::mem::replace(
             &mut self.state,
-            State::from(sha3_plus::Keccak256Full::digest(blob)),
+            State::from(sha3::Keccak256Full::digest(blob)),
         );
         let prev_var =
             std::mem::replace(&mut self.variant, Variant::new(blob, (&self.state).into()));
@@ -160,7 +160,7 @@ impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> Impl
 
 pub fn hash<V: cn_aesni::Variant>(blob: &[u8]) -> GenericArray<u8, U32> {
     let mut mem = Mmap::<[i64x2; 1 << 17]>::default();
-    let mut state = State::from(sha3_plus::Keccak256Full::digest(blob));
+    let mut state = State::from(sha3::Keccak256Full::digest(blob));
     let variant = V::new(blob, (&state).into());
     cn_aesni::explode(&mut mem[..], (&state).into());
     cn_aesni::mix(&mut mem[..], (&state).into(), variant);

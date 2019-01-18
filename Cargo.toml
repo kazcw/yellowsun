@@ -16,7 +16,7 @@ libc = "0.2"
 keccak = "0.1.0"
 blake-hash = "0.2"
 skein-hash = "0.3"
-sha3-plus = "0.8.1"
+sha3 = "0.8.1"
 
 [dev-dependencies]
 hex-literal = "0.1"
