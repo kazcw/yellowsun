@@ -158,7 +158,7 @@ impl<Noncer: Iterator<Item = u32>, Variant: cn_aesni::Variant> Impl
 }
 
 pub fn hash<V: cn_aesni::Variant>(blob: &[u8]) -> GenericArray<u8, U32> {
-    let mut mem = Mmap::<[i64x2; 1 << 17]>::default();
+    let mut mem = Mmap::<[i64x2; 1 << 17]>::new(AllocPolicy::AllowSlow);
     let mut state = State::from(sha3::Keccak256Full::digest(blob));
     let variant = V::new(blob, (&state).into());
     cn_aesni::explode(&mut mem[..], (&state).into());
