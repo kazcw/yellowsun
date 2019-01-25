@@ -183,6 +183,12 @@ macro_rules! iaca_end {
 
 #[inline(always)]
 pub(crate) fn mix<V: Variant>(mem: &mut [__m128i], from: &[__m128i], var: V) {
+    if !is_x86_feature_detected!("aes") {
+        panic!("yellowsun requires aes");
+    }
+    if !is_x86_feature_detected!("sse4.1") {
+        panic!("yellowsun requires sse4.1");
+    }
     unsafe {
         assert_eq!(
             V::mem_size() as usize,
@@ -194,7 +200,7 @@ pub(crate) fn mix<V: Variant>(mem: &mut [__m128i], from: &[__m128i], var: V) {
     }
 }
 
-#[target_feature(enable = "aes", enable = "sse4.1", enable = "sse4.2")]
+#[target_feature(enable = "aes", enable = "sse4.1")]
 unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: V) {
     let mut aa = _mm_xor_si128(from[0], from[2]);
     let mut bb = _mm_xor_si128(from[1], from[3]);
@@ -226,6 +232,9 @@ unsafe fn mix_inner<V: Variant>(mem: &mut [__m128i], from: &[__m128i], mut var: 
 
 #[inline(always)]
 pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
+    if !is_x86_feature_detected!("aes") {
+        panic!("yellowsun requires aes");
+    }
     unsafe {
         assert!(into.len() >= 8);
         assert!(from.len() >= 8);
@@ -289,6 +298,9 @@ unsafe fn genkey(k0: __m128i, k1: __m128i) -> [__m128i; 10] {
 
 #[inline(always)]
 pub(crate) fn explode(mem: &mut [__m128i], from: &[__m128i]) {
+    if !is_x86_feature_detected!("aes") {
+        panic!("yellowsun requires aes");
+    }
     unsafe {
         assert!(from.len() >= 8);
         explode_inner(mem, from)
@@ -313,6 +325,9 @@ unsafe fn explode_inner(mem: &mut [__m128i], from: &[__m128i]) {
 
 #[inline(always)]
 pub(crate) fn implode(into: &mut [__m128i], mem: &[__m128i]) {
+    if !is_x86_feature_detected!("aes") {
+        panic!("yellowsun requires aes");
+    }
     unsafe {
         assert!(into.len() >= 8);
         implode_inner(into, mem);
