@@ -72,12 +72,12 @@ impl Default for Cnv2 {
 unsafe fn int_sqrt_v2(input: u64) -> u32 {
     let r = {
         let exp_double_bias = _mm_set_epi64x(0, (1023u64 << 52) as i64);
-        let x = std::mem::transmute(_mm_add_epi64(
+        let x = _mm_castsi128_pd(_mm_add_epi64(
             _mm_cvtsi64_si128((input >> 12) as i64),
             exp_double_bias,
         ));
         let x = _mm_sqrt_sd(_mm_setzero_pd(), x);
-        (_mm_cvtsi128_si64(_mm_sub_epi64(std::mem::transmute(x), exp_double_bias)) as u64) >> 19
+        (_mm_cvtsi128_si64(_mm_sub_epi64(_mm_castpd_si128(x), exp_double_bias)) as u64) >> 19
     };
 
     let s = r >> 1;
