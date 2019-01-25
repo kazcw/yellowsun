@@ -1,8 +1,5 @@
 // copyright 2017 Kaz Wesley
 
-#![feature(asm)]
-#![feature(stdsimd)]
-
 #[cfg(target_arch = "x86_64")]
 #[cfg(target_feature = "sse2")]
 mod cn_aesni;
