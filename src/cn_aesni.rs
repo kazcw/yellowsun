@@ -1,5 +1,7 @@
 // copyright 2017 Kaz Wesley
 
+#![allow(non_upper_case_globals)]
+
 use std::arch::x86_64::*;
 use std::fmt::Debug;
 
@@ -240,6 +242,20 @@ pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m1
     }
 }
 
+#[rustfmt::skip]
+macro_rules! unroll8 {
+    ($i:ident, $body:block) => {
+        { const $i: usize = 0; $body }
+        { const $i: usize = 1; $body }
+        { const $i: usize = 2; $body }
+        { const $i: usize = 3; $body }
+        { const $i: usize = 4; $body }
+        { const $i: usize = 5; $body }
+        { const $i: usize = 6; $body }
+        { const $i: usize = 7; $body }
+    }
+}
+
 #[target_feature(enable = "aes")]
 unsafe fn transplode_inner(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m128i]) {
     let key_into = genkey(into[2], into[3]);
@@ -247,22 +263,22 @@ unsafe fn transplode_inner(into: &mut [__m128i], mem: &mut [__m128i], from: &[__
     let into = &mut *(&mut into[4] as *mut _ as *mut [__m128i; 8]);
     let mut from = *(&from[4] as *const _ as *const [__m128i; 8]);
     for m in mem.chunks_exact_mut(8) {
-        for (i, m) in into.iter_mut().zip(m.iter()) {
-            *i = _mm_xor_si128(*i, *m);
+        unroll8!(i, {
+            into[i] = _mm_xor_si128(into[i], m[i]);
+        });
+        for &k in &key_into {
+            unroll8!(i, {
+                into[i] = _mm_aesenc_si128(into[i], k);
+            });
         }
-        for k in key_into.iter() {
-            for i in into.iter_mut() {
-                *i = _mm_aesenc_si128(*i, *k);
-            }
+        for &k in &key_from {
+            unroll8!(i, {
+                from[i] = _mm_aesenc_si128(from[i], k);
+            });
         }
-        for k in key_from.iter() {
-            for f in from.iter_mut() {
-                *f = _mm_aesenc_si128(*f, *k);
-            }
-        }
-        for (f, m) in from.iter().zip(m) {
-            *m = *f;
-        }
+        unroll8!(i, {
+            m[i] = from[i];
+        });
     }
 }
 
