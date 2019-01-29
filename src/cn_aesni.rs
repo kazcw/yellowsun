@@ -234,8 +234,8 @@ pub(crate) fn transplode(into: &mut [__m128i], mem: &mut [__m128i], from: &[__m1
         panic!("yellowsun requires aes");
     }
     unsafe {
-        assert!(into.len() >= 8);
-        assert!(from.len() >= 8);
+        assert!(into.len() >= 12);
+        assert!(from.len() >= 12);
         transplode_inner(into, mem, from)
     }
 }
