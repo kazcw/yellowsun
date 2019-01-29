@@ -347,3 +347,21 @@ unsafe fn implode_inner(into: &mut [__m128i], mem: &[__m128i]) {
         }
     }
 }
+
+#[cfg(feature = "dev")]
+#[cfg(bench)]
+mod benches {
+    use super::*;
+    #[bench]
+    fn bench_transplode(b: &mut test::Bencher) {
+        use crate::mmap::Mmap;
+        use crate::mmap::Policy;
+        unsafe {
+            let mut into = [_mm_setzero_si128(); 12];
+            let mut mem = Mmap::<[__m128i; 1 << 17]>::new(Policy::RequireFast);
+            let from = [_mm_setzero_si128(); 12];
+            b.iter(|| transplode(&mut into, &mut mem[..], &from));
+            b.bytes = 1 << 21;;
+        }
+    }
+}

@@ -1,5 +1,9 @@
 // copyright 2017 Kaz Wesley
 
+#![cfg_attr(feature = "dev", feature(test))]
+#[cfg(feature = "dev")]
+extern crate test;
+
 #[cfg(target_arch = "x86_64")]
 #[cfg(target_feature = "sse2")]
 mod cn_aesni;
