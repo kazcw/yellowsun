@@ -58,12 +58,12 @@ pub struct Cnv2 {
 impl Default for Cnv2 {
     fn default() -> Self {
         Cnv2 {
-            bb1: unsafe { _mm_set_epi64x(0, 0) },
+            bb1: unsafe { _mm_setzero_si128() },
             div: 0,
             sqr: 0,
-            j1: unsafe { _mm_set_epi64x(0, 0) },
-            j2: unsafe { _mm_set_epi64x(0, 0) },
-            j3: unsafe { _mm_set_epi64x(0, 0) },
+            j1: unsafe { _mm_setzero_si128() },
+            j2: unsafe { _mm_setzero_si128() },
+            j3: unsafe { _mm_setzero_si128() },
         }
     }
 }
@@ -71,13 +71,11 @@ impl Default for Cnv2 {
 #[inline(always)]
 unsafe fn int_sqrt_v2(input: u64) -> u32 {
     let r = {
-        let exp_double_bias = _mm_set_epi64x(0, (1023u64 << 52) as i64);
-        let x = _mm_castsi128_pd(_mm_add_epi64(
-            _mm_cvtsi64_si128((input >> 12) as i64),
-            exp_double_bias,
-        ));
-        let x = _mm_sqrt_sd(_mm_setzero_pd(), x);
-        (_mm_cvtsi128_si64(_mm_sub_epi64(_mm_castpd_si128(x), exp_double_bias)) as u64) >> 19
+        let exp_double_bias = 1023u64 << 52;
+        let input = _mm_cvtsi64_si128(((input >> 12) | exp_double_bias) as i64);
+        let x = _mm_castsi128_pd(input);
+        let x = _mm_sqrt_sd(x, x);
+        (_mm_cvtsi128_si64(_mm_castpd_si128(x)) as u64 ^ exp_double_bias) >> 19
     };
 
     let s = r >> 1;
@@ -106,12 +104,12 @@ fn test_int_sqrt() {
 
 impl Variant for Cnv2 {
     fn new(_blob: &[u8], state: &[u64; 25]) -> Self {
-        let b2 = state[8] ^ state[10];
-        let b3 = state[9] ^ state[11];
-        let bb1 = unsafe { _mm_set_epi64x(b3 as i64, b2 as i64) };
-        let j1 = unsafe { _mm_set_epi64x(0, 0) };
-        let j2 = unsafe { _mm_set_epi64x(0, 0) };
-        let j3 = unsafe { _mm_set_epi64x(0, 0) };
+        let state_89 = (unsafe { &*(state as *const _ as *const [__m128i; 12]) })[4];
+        let state_ab = (unsafe { &*(state as *const _ as *const [__m128i; 12]) })[5];
+        let bb1 = unsafe { _mm_xor_si128(state_89, state_ab) };
+        let j1 = unsafe { _mm_setzero_si128() };
+        let j2 = unsafe { _mm_setzero_si128() };
+        let j3 = unsafe { _mm_setzero_si128() };
         let div = state[12];
         let sqr = state[13] as u32;
         Cnv2 {
