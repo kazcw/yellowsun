@@ -165,22 +165,6 @@ impl Variant for Cnv2 {
     }
 }
 
-/*
-macro_rules! iaca_start {
-    () => {
-    asm!("mov ebx, 111
-             .byte 0x64, 0x67, 0x90" :::: "intel", "volatile");
-    }
-}
-
-macro_rules! iaca_end {
-    () => {
-    asm!("mov ebx, 222
-             .byte 0x64, 0x67, 0x90" :::: "intel", "volatile");
-    }
-}
-*/
-
 #[inline(always)]
 pub(crate) fn mix<V: Variant>(mem: &mut [__m128i], from: &[__m128i], var: V) {
     if !is_x86_feature_detected!("aes") {
